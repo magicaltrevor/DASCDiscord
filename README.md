@@ -1,20 +1,18 @@
 # Spice Distribution Discord Bot
 
-A Discord bot for **Dune Awakening** guilds to calculate fair distribution of **Spice Melange** from harvested **Spice Sand**.
+A Discord bot for **Dune Awakening** guilds to calculate fair distributions for **Spice Melange**, **Stravidium Fibers**, and **Plastanium**.
 
-## What it does
-- Uses large refinery ratios:
-  - 10,000 Spice Sand → 200 Spice Melange
-  - 75,000 Water per 10,000 Sand
-  - 2,700 seconds (45 minutes) per 10,000 Sand
-- Supports multiple processors (refineries) running in parallel.
-- Computes:
-  - Total Melange
-  - Melange per player (floored to whole units)
-  - Unallocated remainder (if any)
-  - Total Water required
-  - Water per processor
-  - Processing time with your processor count (parallel)
+## Commands
+- **/spice** — convert Spice Sand to Melange and split among players (floored), with water and time per processor.
+- **/plastanium_raw** — split raw **Stravidium Mass → Fiber** and **Titanium Ore** among players; includes water/time per **Medium Chemical Refinery**.
+- **/plastanium** — convert **Mass → Fiber** and then **Fiber + Titanium → Plastanium** using **Large Ore Refineries**; shows water/time for each stage and per-player plastanium (floored).
+- **/help_spicebot** — prints the quick usage guide.
+
+## Ratios & Timing
+- **Spice (Large Spice Refinery)**: 10,000 Sand → 200 Melange, needs 75,000 Water, takes 2,700 s.
+- **Stravidium Fiber (Medium Chemical Refinery)**: 3 Mass + 100 mL Water → 1 Fiber, 10 s per Fiber.
+- **Plastanium (Large Ore Refinery)**: 1 Fiber + 4 Titanium + 1250 mL Water → 1 Plastanium, 20 s per piece.
+
 
 ## Slash command
 /spice sand:<amount> players:<count> processors:<count>
