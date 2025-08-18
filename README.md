@@ -87,3 +87,12 @@ Go to https://discord.com/developers/applications → New Application → Bot �
 Under Privileged Gateway Intents, you don’t need any for this bot. Leave them off.
 
 Under OAuth2 → URL Generator, select bot and applications.commands, then give it minimal Bot Permissions (none needed for slash commands; sending messages happens via interactions). Copy the invite URL and add the bot to your server.
+
+# Local command line version
+
+To run the calculator locally on the command line (not a discord bot) from the root directory of the app run
+
+```bash
+python .\cmd\spice_calc_cmd.py
+```
+And follow the prompts.
