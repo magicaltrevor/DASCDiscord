@@ -333,110 +333,121 @@ async def run_update(interaction: discord.Interaction,
 @bot.tree.command(name="run_calculate", description="Calculate cuts for a run.")
 @app_commands.describe(
     run_id="ID returned by /run",
-    processors="Number of processors (Spice refineries OR Chemical refineries OR Large ore refineries)"
+    processors="(For SPICE only) number of Spice refineries running in parallel",
+    chem_refineries="(For STRAVIDIUM/PLASTANIUM) number of Medium Chemical Refineries",
+    large_refineries="(For PLASTANIUM) number of Large Ore Refineries"
 )
-async def run_calculate(interaction: discord.Interaction, run_id: str, processors: int = 1):
+async def run_calculate(
+    interaction: discord.Interaction,
+    run_id: str,
+    processors: int = 1,
+    chem_refineries: int = 1,
+    large_refineries: int = 1
+):
     try:
         run = _get_run_or_err(run_id)
         players = run["players"]
         if not players:
             await interaction.response.send_message("❌ No players in this run.", ephemeral=True)
             return
+
         n_players = len(players)
         kind = run["kind"]
         amounts = run["amounts"]
 
+        # ---------- SPICE ----------
         if kind == "spice":
-            # Use stored Spice Sand
             sand = float(amounts.get("spice", 0.0))
             if sand <= 0:
                 await interaction.response.send_message("❌ No spice sand recorded for this run.", ephemeral=True)
                 return
-            result = calculate_spice(sand, n_players, max(1, processors))
+            proc = max(1, processors)
+            result = calculate_spice(sand, n_players, proc)
             msg = [
                 f"**Run {run_id}** — Type: **spice**",
                 f"Players ({n_players}): {', '.join(players)}",
-                f"Spice Sand: {sand:,.0f} | Processors: {processors}",
+                f"Spice Sand: {sand:,.0f} | Spice Refineries: {proc}",
                 "",
                 f"**Total Melange:** {result['total_melange']:.2f}",
                 f"**Melange per Player (floored):** {int(result['melange_per_player']):,}",
                 f"**Unallocated Remainder:** {result['melange_remainder']:.2f}",
                 "",
                 f"**Total Water:** {result['total_water']:.2f}",
-                f"**Water per Processor:** {result['water_per_processor']:.2f}",
+                f"**Water per Refinery:** {result['water_per_processor']:.2f}",
                 f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
             ]
             await interaction.response.send_message("\n".join(msg))
             return
 
+        # ------ STRAVIDIUM (Mass -> Fiber) ------
         if kind == "stravidium":
-            # Use stored Stravidium Mass → Fibers; processors = Chemical Refineries
             mass = int(amounts.get("stravidium", 0.0))
             if mass <= 0:
                 await interaction.response.send_message("❌ No stravidium mass recorded for this run.", ephemeral=True)
                 return
-            chem_ref = max(1, processors)
-            stageA = compute_fibers(mass, chem_ref)
+            chem = max(1, chem_refineries)
+            stageA = compute_fibers(mass, chem)
             fibers_total = int(stageA["fibers"])
-            fibers_per_player = fibers_total // n_players
-            remainder = fibers_total - fibers_per_player * n_players
+            per_player_fibers = fibers_total // n_players
+            remainder = fibers_total - per_player_fibers * n_players
             msg = [
                 f"**Run {run_id}** — Type: **stravidium**",
                 f"Players ({n_players}): {', '.join(players)}",
-                f"Stravidium Mass: {mass:,} | Chemical Refineries: {chem_ref}",
+                f"Stravidium Mass: {mass:,} | Chemical Refineries: {chem}",
                 "",
                 f"**Total Fibers:** {fibers_total:,}",
-                f"**Fibers per Player (floored):** {fibers_per_player:,}",
+                f"**Fibers per Player (floored):** {per_player_fibers:,}",
                 f"**Unallocated Remainder:** {remainder:,}",
                 "",
-                f"**Water per Chem Refinery:** {stageA['water_per_refinery']:.0f} mL",
-                f"**Time per Chem Refinery:** {hms(stageA['time_per_refinery_sec'])}",
+                f"**Water per Chemical Refinery:** {stageA['water_per_refinery']:.0f} mL",
+                f"**Time per Chemical Refinery:** {hms(stageA['time_per_refinery_sec'])}",
             ]
             await interaction.response.send_message("\n".join(msg))
             return
 
+        # ------ PLASTANIUM (Mass -> Fiber -> Plastanium) ------
         if kind == "plastanium":
-            # Treat recorded amount as TITANIUM ORE.
-            # Assume enough Stravidium Fibers are available.
-            titanium_ore = int(float(amounts.get("titanium", 0.0) or amounts.get("plastanium", 0.0)))
-            # Backward-compat: if older runs stored "plastanium" for this type, we interpret it as titanium.
-            if titanium_ore <= 0:
+            # REQUIRE both stravidium mass and titanium ore
+            mass = int(amounts.get("stravidium", 0.0))
+            titanium = int(amounts.get("titanium", 0.0))
+            if mass <= 0 or titanium <= 0:
                 await interaction.response.send_message(
-                    "❌ No titanium ore recorded for this run. Use /run_update field:titanium amount:<number>.",
+                    "❌ Plastanium runs require both **stravidium** mass and **titanium** amounts. "
+                    "Use /run_update to add them.",
                     ephemeral=True
                 )
                 return
 
-            large_refineries = max(1, processors)
+            chem = max(1, chem_refineries)
+            large = max(1, large_refineries)
 
-            # Max plastanium limited ONLY by titanium (4 Ti per plastanium)
-            max_by_titanium = titanium_ore // TI_PER_PLASTANIUM_LARGE
-            plastanium_total = int(max_by_titanium)
+            # Stage A: Mass -> Fiber (Medium Chemical Refinery)
+            stageA = compute_fibers(mass, chem)
+            fibers_total = int(stageA["fibers"])
 
-            # Water/time totals for crafting those plastanium pieces (Large Ore Refinery path)
-            water_total = plastanium_total * WATER_PER_PLASTANIUM            # mL
-            time_total_sec = plastanium_total * SEC_PER_PLASTANIUM_LARGE     # seconds
-
-            water_per_refinery = water_total / large_refineries
-            time_per_refinery_sec = time_total_sec / large_refineries
-
+            # Stage B: Fiber + Titanium -> Plastanium (Large Ore Refinery)
+            stageB = compute_plastanium_large(fibers_total, titanium, large)
+            plastanium_total = int(stageB["pieces"])
             per_player = plastanium_total // n_players
             remainder = plastanium_total - per_player * n_players
 
             msg = [
                 f"**Run {run_id}** — Type: **plastanium**",
                 f"Players ({n_players}): {', '.join(players)}",
-                f"Titanium Ore: {titanium_ore:,} | Large Ore Refineries: {large_refineries}",
+                f"Inputs — Stravidium Mass: {mass:,}, Titanium Ore: {titanium:,}",
+                f"Chem Refineries: {chem} | Large Ore Refineries: {large}",
                 "",
-                "**Assumptions:** Enough Stravidium Fibers are available.",
-                "",
-                f"**Total Plastanium (limited by Ti/4):** {plastanium_total:,}",
-                f"**Plastanium per Player (floored):** {per_player:,}",
-                f"**Unallocated Remainder:** {remainder:,}",
+                "**Fiber Stage (Medium Chemical Refinery)**",
+                f"Water per Chem Refinery: {stageA['water_per_refinery']:.0f} mL",
+                f"Time per Chem Refinery: {hms(stageA['time_per_refinery_sec'])}",
                 "",
                 "**Plastanium Stage (Large Ore Refinery)**",
-                f"Water per Large Ore Refinery: {water_per_refinery:.0f} mL",
-                f"Time per Large Ore Refinery: {hms(time_per_refinery_sec)}",
+                f"Water per Large Ore Refinery: {stageB['water_per_refinery']:.0f} mL",
+                f"Time per Large Ore Refinery: {hms(stageB['time_per_refinery_sec'])}",
+                "",
+                f"**Total Plastanium:** {plastanium_total:,}",
+                f"**Plastanium per Player (floored):** {per_player:,}",
+                f"**Unallocated Remainder:** {remainder:,}",
             ]
             await interaction.response.send_message("\n".join(msg))
             return
@@ -445,7 +456,7 @@ async def run_calculate(interaction: discord.Interaction, run_id: str, processor
 
     except ValueError as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
-
+        
 # ------------- /run-view -------------
 @bot.tree.command(name="run_view", description="View the current state of a run.")
 @app_commands.describe(
