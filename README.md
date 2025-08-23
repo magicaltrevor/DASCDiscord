@@ -18,6 +18,31 @@ A Discord bot for **Dune Awakening** guilds to calculate fair distributions for 
 /spice sand:<amount> players:<count> processors:<count>
 Example:
 /spice sand:25000 players:4 processors:2
+/plastanium_raw strav_mass:<amount> titanium_ore:<amount> players:<count> chem_refineries:<count>
+Example:
+/plastanium_raw strav_mass:100 players:4 chem_refineries:2
+/plastanium strav_mass:<amount> titanium_ore:<amount> players:<count> large_refineries:<count> chem_refineries:<count>
+Example:
+/plastanium strav_mass:1000 titanium_ore:10000 players:4 large_refineries:2 chem_refineries:2
+/run kind:<spice|plastanium|stravidium> players_csv:<Player1,Player2,...> -> create a run and will return a run id
+Example:
+/run kind:spice players_csv:Alice,Bob,Charlie
+/run_update run_id:<id> field:<players|spice|plastanium|stravidium|titanium> [value:<PlayerName>] [amount:<number>] -> update a run
+Example:
+/run_update run_id:123 field:spice amount:50000
+/run_update run_id:123 field:players value:Dave -> add a player
+/run_calculate run_id:<id> processors:<count> -> calculate cuts for a run
+Example:
+/run_calculate run_id:123 processors:2
+/run_view run_id:<id> -> view current state of a run
+Example:
+/run_view run_id:123
+/run_delete run_id:<id> -> delete a run (creator or admin only)
+Example:
+/run_delete run_id:123
+/help_spicebot
+
+
 # Local run commandline (optional)
 ```bash
 python .\cmd\spice_calculatorv3.py

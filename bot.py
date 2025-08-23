@@ -2,6 +2,41 @@ import os
 import math
 import discord
 from discord import app_commands
+import json
+from pathlib import Path
+from uuid import uuid4
+
+# =========================
+# Simple RUN TRACKER (with JSON persistence)
+# =========================
+RUNS_PATH = Path("runs.json")
+RUN_TYPES = ("spice", "plastanium", "stravidium")
+AMOUNT_FIELDS = ("spice", "plastanium", "stravidium", "titanium")  # titanium optional; helpful for reports
+def _load_runs() -> dict:
+    if RUNS_PATH.exists():
+        try:
+            return json.loads(RUNS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+    return {}
+
+def _save_runs(data: dict) -> None:
+    RUNS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+RUNS = _load_runs()
+
+def _new_run_id() -> str:
+    # Short, friendly ID
+    return uuid4().hex[:8]
+
+def _parse_players_csv(csv_str: str) -> list[str]:
+    return [p.strip() for p in csv_str.split(",") if p.strip()]
+
+def _get_run_or_err(run_id: str):
+    run = RUNS.get(run_id)
+    if not run:
+        raise ValueError("Run ID not found.")
+    return run
 
 # =========================
 # Game constants (Spice)
@@ -191,8 +226,298 @@ async def help_spicebot(interaction: discord.Interaction):
         "**/spice** sand:<amount> players:<count> processors:<count>",
         "**/plastanium_raw** strav_mass:<amount> titanium_ore:<amount> players:<count> chem_refineries:<count>",
         "**/plastanium** strav_mass:<amount> titanium_ore:<amount> players:<count> large_refineries:<count> chem_refineries:<count>",
+        "**/run** kind:<spice|plastanium|stravidium> players_csv:<Player1,Player2,...> → create a tracked run will return a run ID",
+        "**/run_update** run_id:<id> field:<players|spice|plastanium|stravidium|titanium> [value:<PlayerName>] [amount:<number>] → update a run",
+        "**/run_calculate** run_id:<id> processors:<count> → calculate cuts for a run",
+        "**/run_view** run_id:<id> → view current state of a run",
+        "**/run_delete** run_id:<id> → delete a run (creator or admin only)",
     ]
     await interaction.response.send_message("\n".join(msg), ephemeral=True)
+
+# ---------------- /run ----------------
+@bot.tree.command(name="run", description="Start a tracked run and get a run ID.")
+@app_commands.describe(
+    kind="spice | plastanium | stravidium",
+    players_csv="Comma-delimited player names (e.g., Alice,Bob,Charlie)"
+)
+async def run_start(interaction: discord.Interaction, kind: str, players_csv: str):
+    kind = kind.lower().strip()
+    if kind not in RUN_TYPES:
+        await interaction.response.send_message("❌ kind must be one of: spice, plastanium, stravidium", ephemeral=True)
+        return
+
+    players = list(dict.fromkeys(_parse_players_csv(players_csv)))  # dedupe, preserve order
+    if not players:
+        await interaction.response.send_message("❌ Provide at least one player in players_csv.", ephemeral=True)
+        return
+
+    run_id = _new_run_id()
+    RUNS[run_id] = {
+        "kind": kind,
+        "players": players,                 # list[str]
+        "amounts": {                        # numeric accumulators
+            "spice": 0.0,
+            "plastanium": 0.0,
+            "stravidium": 0.0,
+            "titanium": 0.0,
+        },
+        "created_by": interaction.user.id,
+        "created_at": interaction.created_at.isoformat() if hasattr(interaction, "created_at") else "",
+    }
+    _save_runs(RUNS)
+
+    await interaction.response.send_message(
+        f"✅ Run created: **{run_id}**\n"
+        f"Type: **{kind}**\n"
+        f"Players: {', '.join(players)}"
+    )
+
+# -------------- /run-update --------------
+@bot.tree.command(name="run_update", description="Update players or amounts for a run.")
+@app_commands.describe(
+    run_id="ID returned by /run",
+    field="players | spice | plastanium | stravidium | titanium",
+    value="If field=players, provide the player name to add",
+    amount="If field is a resource, provide the numeric amount to add (can be decimal)"
+)
+async def run_update(interaction: discord.Interaction,
+                     run_id: str,
+                     field: str,
+                     value: str | None = None,
+                     amount: float | None = None):
+    try:
+        run = _get_run_or_err(run_id)
+        field = field.lower().strip()
+
+        if field == "players":
+            if not value:
+                await interaction.response.send_message("❌ Provide value=<PlayerName> when field=players.", ephemeral=True)
+                return
+            name = value.strip()
+            if not name:
+                await interaction.response.send_message("❌ Player name cannot be empty.", ephemeral=True)
+                return
+            if name in run["players"]:
+                await interaction.response.send_message(f"ℹ️ Player **{name}** is already on the roster.", ephemeral=True)
+                return
+            run["players"].append(name)
+            _save_runs(RUNS)
+            await interaction.response.send_message(
+                f"✅ Added **{name}** to run **{run_id}**.\n"
+                f"Roster: {', '.join(run['players'])}"
+            )
+            return
+
+        # Resource update
+        if field not in AMOUNT_FIELDS:
+            await interaction.response.send_message(
+                "❌ field must be one of: players | spice | plastanium | stravidium | titanium",
+                ephemeral=True
+            )
+            return
+        if amount is None:
+            await interaction.response.send_message("❌ Provide amount=<number> for resource updates.", ephemeral=True)
+            return
+
+        run["amounts"][field] = float(run["amounts"].get(field, 0.0)) + float(amount)
+        _save_runs(RUNS)
+        await interaction.response.send_message(
+            f"✅ Updated **{field}** for run **{run_id}**.\n"
+            f"New total {field}: {run['amounts'][field]:,}"
+        )
+
+    except ValueError as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+
+# ------------ /run-calculate ------------
+@bot.tree.command(name="run_calculate", description="Calculate cuts for a run.")
+@app_commands.describe(
+    run_id="ID returned by /run",
+    processors="Number of processors (Spice refineries OR Chemical refineries OR Large ore refineries)"
+)
+async def run_calculate(interaction: discord.Interaction, run_id: str, processors: int = 1):
+    try:
+        run = _get_run_or_err(run_id)
+        players = run["players"]
+        if not players:
+            await interaction.response.send_message("❌ No players in this run.", ephemeral=True)
+            return
+        n_players = len(players)
+        kind = run["kind"]
+        amounts = run["amounts"]
+
+        if kind == "spice":
+            # Use stored Spice Sand
+            sand = float(amounts.get("spice", 0.0))
+            if sand <= 0:
+                await interaction.response.send_message("❌ No spice sand recorded for this run.", ephemeral=True)
+                return
+            result = calculate_spice(sand, n_players, max(1, processors))
+            msg = [
+                f"**Run {run_id}** — Type: **spice**",
+                f"Players ({n_players}): {', '.join(players)}",
+                f"Spice Sand: {sand:,.0f} | Processors: {processors}",
+                "",
+                f"**Total Melange:** {result['total_melange']:.2f}",
+                f"**Melange per Player (floored):** {int(result['melange_per_player']):,}",
+                f"**Unallocated Remainder:** {result['melange_remainder']:.2f}",
+                "",
+                f"**Total Water:** {result['total_water']:.2f}",
+                f"**Water per Processor:** {result['water_per_processor']:.2f}",
+                f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
+            ]
+            await interaction.response.send_message("\n".join(msg))
+            return
+
+        if kind == "stravidium":
+            # Use stored Stravidium Mass → Fibers; processors = Chemical Refineries
+            mass = int(amounts.get("stravidium", 0.0))
+            if mass <= 0:
+                await interaction.response.send_message("❌ No stravidium mass recorded for this run.", ephemeral=True)
+                return
+            chem_ref = max(1, processors)
+            stageA = compute_fibers(mass, chem_ref)
+            fibers_total = int(stageA["fibers"])
+            fibers_per_player = fibers_total // n_players
+            remainder = fibers_total - fibers_per_player * n_players
+            msg = [
+                f"**Run {run_id}** — Type: **stravidium**",
+                f"Players ({n_players}): {', '.join(players)}",
+                f"Stravidium Mass: {mass:,} | Chemical Refineries: {chem_ref}",
+                "",
+                f"**Total Fibers:** {fibers_total:,}",
+                f"**Fibers per Player (floored):** {fibers_per_player:,}",
+                f"**Unallocated Remainder:** {remainder:,}",
+                "",
+                f"**Water per Chem Refinery:** {stageA['water_per_refinery']:.0f} mL",
+                f"**Time per Chem Refinery:** {hms(stageA['time_per_refinery_sec'])}",
+            ]
+            await interaction.response.send_message("\n".join(msg))
+            return
+
+        if kind == "plastanium":
+            # Treat recorded amount as TITANIUM ORE.
+            # Assume enough Stravidium Fibers are available.
+            titanium_ore = int(float(amounts.get("titanium", 0.0) or amounts.get("plastanium", 0.0)))
+            # Backward-compat: if older runs stored "plastanium" for this type, we interpret it as titanium.
+            if titanium_ore <= 0:
+                await interaction.response.send_message(
+                    "❌ No titanium ore recorded for this run. Use /run_update field:titanium amount:<number>.",
+                    ephemeral=True
+                )
+                return
+
+            large_refineries = max(1, processors)
+
+            # Max plastanium limited ONLY by titanium (4 Ti per plastanium)
+            max_by_titanium = titanium_ore // TI_PER_PLASTANIUM_LARGE
+            plastanium_total = int(max_by_titanium)
+
+            # Water/time totals for crafting those plastanium pieces (Large Ore Refinery path)
+            water_total = plastanium_total * WATER_PER_PLASTANIUM            # mL
+            time_total_sec = plastanium_total * SEC_PER_PLASTANIUM_LARGE     # seconds
+
+            water_per_refinery = water_total / large_refineries
+            time_per_refinery_sec = time_total_sec / large_refineries
+
+            per_player = plastanium_total // n_players
+            remainder = plastanium_total - per_player * n_players
+
+            msg = [
+                f"**Run {run_id}** — Type: **plastanium**",
+                f"Players ({n_players}): {', '.join(players)}",
+                f"Titanium Ore: {titanium_ore:,} | Large Ore Refineries: {large_refineries}",
+                "",
+                "**Assumptions:** Enough Stravidium Fibers are available.",
+                "",
+                f"**Total Plastanium (limited by Ti/4):** {plastanium_total:,}",
+                f"**Plastanium per Player (floored):** {per_player:,}",
+                f"**Unallocated Remainder:** {remainder:,}",
+                "",
+                "**Plastanium Stage (Large Ore Refinery)**",
+                f"Water per Large Ore Refinery: {water_per_refinery:.0f} mL",
+                f"Time per Large Ore Refinery: {hms(time_per_refinery_sec)}",
+            ]
+            await interaction.response.send_message("\n".join(msg))
+            return
+
+        await interaction.response.send_message("❌ Unknown run type.", ephemeral=True)
+
+    except ValueError as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+
+# ------------- /run-view -------------
+@bot.tree.command(name="run_view", description="View the current state of a run.")
+@app_commands.describe(
+    run_id="ID returned by /run"
+)
+async def run_view(interaction: discord.Interaction, run_id: str):
+    try:
+        run = _get_run_or_err(run_id)
+        players = run.get("players", [])
+        amounts = run.get("amounts", {})
+        kind = run.get("kind", "?")
+        created_by = run.get("created_by", None)
+        created_at = run.get("created_at", "")
+
+        # Pretty amounts (show only nonzero or all?)
+        def fmt_amount(k):
+            v = float(amounts.get(k, 0))
+            # Show as int if it's whole; otherwise show with 2 decimals.
+            return f"{int(v):,}" if abs(v - int(v)) < 1e-9 else f"{v:,.2f}"
+
+        amount_lines = [
+            f"- spice: {fmt_amount('spice')}",
+            f"- plastanium: {fmt_amount('plastanium')}",
+            f"- stravidium: {fmt_amount('stravidium')}",
+            f"- titanium: {fmt_amount('titanium')}",
+        ]
+
+        creator_str = f"<@{created_by}>" if created_by else "(unknown)"
+        roster_str = ", ".join(players) if players else "(none)"
+
+        msg = [
+            f"**Run {run_id}**",
+            f"Type: **{kind}**",
+            f"Created by: {creator_str}",
+            f"Created at: {created_at or '(n/a)'}",
+            "",
+            f"**Players ({len(players)}):** {roster_str}",
+            "",
+            "**Recorded amounts:**",
+            *amount_lines,
+        ]
+        await interaction.response.send_message("\n".join(msg))
+    except ValueError as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+
+# ----------- /run-delete -----------
+@bot.tree.command(name="run_delete", description="Delete a run (creator or admin only).")
+@app_commands.describe(
+    run_id="ID returned by /run"
+)
+async def run_delete(interaction: discord.Interaction, run_id: str):
+    try:
+        run = _get_run_or_err(run_id)
+
+        # Permission check: creator OR user with Administrator permission
+        is_creator = (interaction.user.id == run.get("created_by"))
+        is_admin = getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
+
+        if not (is_creator or is_admin):
+            await interaction.response.send_message(
+                "❌ You must be the run creator or a server administrator to delete this run.",
+                ephemeral=True
+            )
+            return
+
+        # Delete and persist
+        del RUNS[run_id]
+        _save_runs(RUNS)
+
+        await interaction.response.send_message(f"🗑️ Run **{run_id}** deleted.")
+    except ValueError as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
 if __name__ == "__main__":
     token = os.getenv("DISCORD_BOT_TOKEN")
