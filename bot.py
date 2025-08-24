@@ -12,6 +12,7 @@ from uuid import uuid4
 RUNS_PATH = Path("runs.json")
 RUN_TYPES = ("spice", "plastanium", "stravidium")
 AMOUNT_FIELDS = ("spice", "plastanium", "stravidium", "titanium")  # titanium optional; helpful for reports
+
 def _load_runs() -> dict:
     if RUNS_PATH.exists():
         try:
@@ -61,7 +62,7 @@ FIBER_PER_PLASTANIUM = 1
 WATER_PER_PLASTANIUM = 1250
 SEC_PER_PLASTANIUM_LARGE = 20
 
-# Plastanium @ Medium Ore Refinery (unused)
+# Plastanium @ Medium Ore Refinery (unused here)
 TI_PER_PLASTANIUM_MED = 6
 SEC_PER_PLASTANIUM_MED = 30
 
@@ -70,6 +71,10 @@ def hms(seconds: float) -> str:
     h, r = divmod(total, 3600)
     m, s = divmod(r, 60)
     return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
+
+def is_ephemeral(public: bool) -> bool:
+    """Return True when the reply should be private (ephemeral); False when public."""
+    return not public
 
 def calculate_spice(sand: float, players: int, processors: int):
     if sand <= 0 or players < 1 or processors < 1:
@@ -91,22 +96,37 @@ def calculate_spice(sand: float, players: int, processors: int):
     }
 
 def compute_fibers(strav_mass: int, chem_refineries: int):
+    """Mass -> Fibers stage. Returns counts + per-refinery water/time + raw leftovers."""
     chem_refineries = max(1, chem_refineries)
     fibers = strav_mass // STRAV_MASS_PER_FIBER
+    raw_consumed = fibers * STRAV_MASS_PER_FIBER
+    raw_leftover = strav_mass - raw_consumed
     water_total = fibers * WATER_PER_FIBER
     time_single = fibers * SEC_PER_FIBER
     return {
         "fibers": fibers,
+        "raw_consumed": raw_consumed,
+        "raw_leftover": raw_leftover,
         "water_total": water_total,
         "water_per_refinery": water_total / chem_refineries,
         "time_per_refinery_sec": time_single / chem_refineries,
     }
 
 def compute_plastanium_large(fibers_avail: int, titanium_ore: int, large_refineries: int):
+    """
+    Fiber + Titanium -> Plastanium stage (Large Ore Refinery).
+    Returns piece counts, per-refinery water/time, and material consumption/leftovers.
+    """
     large_refineries = max(1, large_refineries)
     max_by_fiber = fibers_avail // FIBER_PER_PLASTANIUM
     max_by_titanium = titanium_ore // TI_PER_PLASTANIUM_LARGE
     pieces = min(max_by_fiber, max_by_titanium)
+
+    fiber_used = pieces * FIBER_PER_PLASTANIUM
+    titanium_used = pieces * TI_PER_PLASTANIUM_LARGE
+    fiber_leftover = fibers_avail - fiber_used
+    titanium_leftover = titanium_ore - titanium_used
+
     water_total = pieces * WATER_PER_PLASTANIUM
     time_single = pieces * SEC_PER_PLASTANIUM_LARGE
     return {
@@ -114,6 +134,11 @@ def compute_plastanium_large(fibers_avail: int, titanium_ore: int, large_refiner
         "water_total": water_total,
         "water_per_refinery": water_total / large_refineries,
         "time_per_refinery_sec": time_single / large_refineries,
+        # New: detailed usage/leftovers
+        "fiber_used": fiber_used,
+        "fiber_leftover": fiber_leftover,
+        "titanium_used": titanium_used,
+        "titanium_leftover": titanium_leftover,
     }
 
 class SpiceBot(discord.Client):
@@ -127,14 +152,15 @@ class SpiceBot(discord.Client):
 
 bot = SpiceBot()
 
-# /spice
+# ---------------- /spice ----------------
 @bot.tree.command(name="spice", description="Calculate Spice Melange distribution from Spice Sand.")
 @app_commands.describe(
     sand="Total Spice Sand collected",
     players="Number of players",
-    processors="Number of processors/refineries"
+    processors="Number of processors/refineries",
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
-async def spice(interaction: discord.Interaction, sand: float, players: int, processors: int = 1):
+async def spice(interaction: discord.Interaction, sand: float, players: int, processors: int = 1, public: bool = False):
     try:
         result = calculate_spice(sand, players, processors)
         msg = [
@@ -150,87 +176,109 @@ async def spice(interaction: discord.Interaction, sand: float, players: int, pro
             f"**Water per Processor:** {result['water_per_processor']:.2f}",
             f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
         ]
-        await interaction.response.send_message("\n".join(msg))
+        await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
     except Exception as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
-# /plastanium_raw
-@bot.tree.command(name="plastanium_raw",
-    description="Split raw Stravidium→Fiber + Titanium; show chem refinery water/time and per-player raw splits.")
+# ------------- /plastanium_raw -------------
+@bot.tree.command(
+    name="plastanium_raw",
+    description="Split raw Stravidium→Fiber + Titanium; show chem refinery water/time and per-player raw splits."
+)
 @app_commands.describe(
     strav_mass="Total Stravidium Mass",
     titanium_ore="Total Titanium Ore",
     players="Number of players",
-    chem_refineries="Number of Medium Chemical Refineries"
+    chem_refineries="Number of Medium Chemical Refineries",
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
-async def plastanium_raw(interaction: discord.Interaction,
-    strav_mass: int, titanium_ore: int, players: int, chem_refineries: int):
-    stageA = compute_fibers(strav_mass, chem_refineries)
-    fibers = stageA["fibers"]
-    fibers_per_player = fibers // players
-    titanium_per_player = titanium_ore // players
-    msg = [
-        f"**Stravidium Mass:** {strav_mass:,} | **Titanium Ore:** {titanium_ore:,}",
-        f"**Players:** {players} | **Chem Refineries:** {chem_refineries}",
-        "",
-        f"**Water per Chem Refinery:** {stageA['water_per_refinery']:.0f} mL",
-        f"**Time per Chem Refinery:** {hms(stageA['time_per_refinery_sec'])}",
-        "",
-        f"**Stravidium Fibers per Player (floored):** {fibers_per_player:,}",
-        f"**Titanium Ore per Player (floored):** {titanium_per_player:,}",
-    ]
-    await interaction.response.send_message("\n".join(msg))
+async def plastanium_raw(
+    interaction: discord.Interaction,
+    strav_mass: int, titanium_ore: int, players: int, chem_refineries: int, public: bool = False
+):
+    try:
+        stageA = compute_fibers(strav_mass, chem_refineries)
+        fibers = stageA["fibers"]
+        fibers_per_player = fibers // players
+        titanium_per_player = titanium_ore // players
+        msg = [
+            f"**Stravidium Mass:** {strav_mass:,} | **Titanium Ore:** {titanium_ore:,}",
+            f"**Players:** {players} | **Chem Refineries:** {chem_refineries}",
+            "",
+            f"**Water per Chem Refinery:** {stageA['water_per_refinery']:.0f} mL",
+            f"**Time per Chem Refinery:** {hms(stageA['time_per_refinery_sec'])}",
+            "",
+            f"**Stravidium Fibers per Player (floored):** {fibers_per_player:,}",
+            f"**Titanium Ore per Player (floored):** {titanium_per_player:,}",
+        ]
+        await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
+    except Exception as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
-# /plastanium
-@bot.tree.command(name="plastanium",
-    description="Mass→Fiber then Fiber+Titanium→Plastanium; per-refinery water/time + per-player plastanium.")
+# ---------------- /plastanium ----------------
+@bot.tree.command(
+    name="plastanium",
+    description="Mass→Fiber then Fiber+Titanium→Plastanium; per-refinery water/time + per-player plastanium."
+)
 @app_commands.describe(
     strav_mass="Total Stravidium Mass",
     titanium_ore="Total Titanium Ore",
     players="Number of players",
     large_refineries="Number of Large Ore Refineries",
-    chem_refineries="Number of Medium Chemical Refineries"
+    chem_refineries="Number of Medium Chemical Refineries",
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
-async def plastanium(interaction: discord.Interaction,
-    strav_mass: int, titanium_ore: int, players: int, large_refineries: int, chem_refineries: int):
-    stageA = compute_fibers(strav_mass, chem_refineries)
-    fibers = stageA["fibers"]
-    stageB = compute_plastanium_large(fibers, titanium_ore, large_refineries)
-    plastanium_total = stageB["pieces"]
-    per_player = plastanium_total // players
-    remainder = plastanium_total - per_player * players
-    msg = [
-        f"**Inputs** — Stravidium Mass: {strav_mass:,}, Titanium Ore: {titanium_ore:,}",
-        f"Players: {players} | Chem Refineries: {chem_refineries} | Large Ore Refineries: {large_refineries}",
-        "",
-        "**Fiber Stage (Medium Chemical Refinery)**",
-        f"Water per Chem Refinery: {stageA['water_per_refinery']:.0f} mL",
-        f"Time per Chem Refinery: {hms(stageA['time_per_refinery_sec'])}",
-        "",
-        "**Plastanium Stage (Large Ore Refinery)**",
-        f"Water per Large Ore Refinery: {stageB['water_per_refinery']:.0f} mL",
-        f"Time per Large Ore Refinery: {hms(stageB['time_per_refinery_sec'])}",
-        "",
-        f"**Total Plastanium:** {plastanium_total:,}",
-        f"**Plastanium per Player (floored):** {per_player:,}",
-        f"**Unallocated Remainder:** {remainder:,}",
-    ]
-    await interaction.response.send_message("\n".join(msg))
+async def plastanium(
+    interaction: discord.Interaction,
+    strav_mass: int, titanium_ore: int, players: int, large_refineries: int, chem_refineries: int, public: bool = False
+):
+    try:
+        stageA = compute_fibers(strav_mass, chem_refineries)
+        fibers = stageA["fibers"]
+        stageB = compute_plastanium_large(fibers, titanium_ore, large_refineries)
+        plastanium_total = stageB["pieces"]
+        per_player = plastanium_total // players
+        remainder = plastanium_total - per_player * players
 
-# /help_spicebot
+        msg = [
+            f"**Inputs** — Stravidium Mass: {strav_mass:,}, Titanium Ore: {titanium_ore:,}",
+            f"Players: {players} | Chem Refineries: {chem_refineries} | Large Ore Refineries: {large_refineries}",
+            "",
+            "**Fiber Stage (Medium Chemical Refinery)**",
+            f"Water per Chem Refinery: {stageA['water_per_refinery']:.0f} mL",
+            f"Time per Chem Refinery: {hms(stageA['time_per_refinery_sec'])}",
+            "",
+            "**Plastanium Stage (Large Ore Refinery)**",
+            f"Water per Large Ore Refinery: {stageB['water_per_refinery']:.0f} mL",
+            f"Time per Large Ore Refinery: {hms(stageB['time_per_refinery_sec'])}",
+            "",
+            f"**Total Plastanium:** {plastanium_total:,}",
+            f"**Plastanium per Player (floored):** {per_player:,}",
+            f"**Unallocated Remainder:** {remainder:,}",
+            "",
+            "**Leftovers After Crafting**",
+            f"Leftover Stravidium Fiber: {stageB['fiber_leftover']:,}",
+            f"Leftover Raw Stravidium: {stageA['raw_leftover']:,}",
+            f"Leftover Titanium Ore: {stageB['titanium_leftover']:,}",
+        ]
+        await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
+    except Exception as e:
+        await interaction.response.send_message(f"❌ {e}", ephemeral=True)
+
+# ------------------- /help -------------------
 @bot.tree.command(name="help_spicebot", description="Show usage for spice and plastanium commands.")
 async def help_spicebot(interaction: discord.Interaction):
     msg = [
         "**Spice Distribution Bot — Commands**",
         "",
-        "**/spice** sand:<amount> players:<count> processors:<count>",
-        "**/plastanium_raw** strav_mass:<amount> titanium_ore:<amount> players:<count> chem_refineries:<count>",
-        "**/plastanium** strav_mass:<amount> titanium_ore:<amount> players:<count> large_refineries:<count> chem_refineries:<count>",
-        "**/run** kind:<spice|plastanium|stravidium> players_csv:<Player1,Player2,...> → create a tracked run will return a run ID",
-        "**/run_update** run_id:<id> field:<players|spice|plastanium|stravidium|titanium> [value:<PlayerName>] [amount:<number>] → update a run",
-        "**/run_calculate** run_id:<id> processors:<count> → calculate cuts for a run",
-        "**/run_view** run_id:<id> → view current state of a run",
-        "**/run_delete** run_id:<id> → delete a run (creator or admin only)",
+        "**/spice** sand:<amount> players:<count> processors:<count> [public:<true|false>]",
+        "**/plastanium_raw** strav_mass:<amount> titanium_ore:<amount> players:<count> chem_refineries:<count> [public:<true|false>]",
+        "**/plastanium** strav_mass:<amount> titanium_ore:<amount> players:<count> large_refineries:<count> chem_refineries:<count> [public:<true|false>]",
+        "**/run** kind:<spice|plastanium|stravidium> players_csv:<Player1,Player2,...> [public:<true|false>] → returns a run ID",
+        "**/run_update** run_id:<id> field:<players|spice|plastanium|stravidium|titanium> [value:<PlayerName>] [amount:<number>] [public:<true|false>]",
+        "**/run_calculate** run_id:<id> processors:<#> chem_refineries:<#> large_refineries:<#> [public:<true|false>]",
+        "**/run_view** run_id:<id> [public:<true|false>]",
+        "**/run_delete** run_id:<id> [public:<true|false>] (creator/admin only)",
     ]
     await interaction.response.send_message("\n".join(msg), ephemeral=True)
 
@@ -238,9 +286,10 @@ async def help_spicebot(interaction: discord.Interaction):
 @bot.tree.command(name="run", description="Start a tracked run and get a run ID.")
 @app_commands.describe(
     kind="spice | plastanium | stravidium",
-    players_csv="Comma-delimited player names (e.g., Alice,Bob,Charlie)"
+    players_csv="Comma-delimited player names (e.g., Alice,Bob,Charlie)",
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
-async def run_start(interaction: discord.Interaction, kind: str, players_csv: str):
+async def run_start(interaction: discord.Interaction, kind: str, players_csv: str, public: bool = False):
     kind = kind.lower().strip()
     if kind not in RUN_TYPES:
         await interaction.response.send_message("❌ kind must be one of: spice, plastanium, stravidium", ephemeral=True)
@@ -269,7 +318,8 @@ async def run_start(interaction: discord.Interaction, kind: str, players_csv: st
     await interaction.response.send_message(
         f"✅ Run created: **{run_id}**\n"
         f"Type: **{kind}**\n"
-        f"Players: {', '.join(players)}"
+        f"Players: {', '.join(players)}",
+        ephemeral=is_ephemeral(public)
     )
 
 # -------------- /run-update --------------
@@ -278,13 +328,17 @@ async def run_start(interaction: discord.Interaction, kind: str, players_csv: st
     run_id="ID returned by /run",
     field="players | spice | plastanium | stravidium | titanium",
     value="If field=players, provide the player name to add",
-    amount="If field is a resource, provide the numeric amount to add (can be decimal)"
+    amount="If field is a resource, provide the numeric amount to add (can be decimal)",
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
-async def run_update(interaction: discord.Interaction,
-                     run_id: str,
-                     field: str,
-                     value: str | None = None,
-                     amount: float | None = None):
+async def run_update(
+    interaction: discord.Interaction,
+    run_id: str,
+    field: str,
+    value: str | None = None,
+    amount: float | None = None,
+    public: bool = False
+):
     try:
         run = _get_run_or_err(run_id)
         field = field.lower().strip()
@@ -304,7 +358,8 @@ async def run_update(interaction: discord.Interaction,
             _save_runs(RUNS)
             await interaction.response.send_message(
                 f"✅ Added **{name}** to run **{run_id}**.\n"
-                f"Roster: {', '.join(run['players'])}", ephemeral=True
+                f"Roster: {', '.join(run['players'])}",
+                ephemeral=is_ephemeral(public)
             )
             return
 
@@ -323,7 +378,8 @@ async def run_update(interaction: discord.Interaction,
         _save_runs(RUNS)
         await interaction.response.send_message(
             f"✅ Updated **{field}** for run **{run_id}**.\n"
-            f"New total {field}: {run['amounts'][field]:,}", ephemeral=True
+            f"New total {field}: {run['amounts'][field]:,}",
+            ephemeral=is_ephemeral(public)
         )
 
     except ValueError as e:
@@ -336,7 +392,7 @@ async def run_update(interaction: discord.Interaction,
     processors="(For SPICE only) number of Spice refineries running in parallel",
     chem_refineries="(For STRAVIDIUM/PLASTANIUM) number of Medium Chemical Refineries",
     large_refineries="(For PLASTANIUM) number of Large Ore Refineries",
-    public="If set, the run details will be visible to all users (default: false)"
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def run_calculate(
     interaction: discord.Interaction,
@@ -356,7 +412,7 @@ async def run_calculate(
         n_players = len(players)
         kind = run["kind"]
         amounts = run["amounts"]
-        make_ephemeral = True if public else False
+
         # ---------- SPICE ----------
         if kind == "spice":
             sand = float(amounts.get("spice", 0.0))
@@ -378,7 +434,7 @@ async def run_calculate(
                 f"**Water per Refinery:** {result['water_per_processor']:.2f}",
                 f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
             ]
-            await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
+            await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
             return
 
         # ------ STRAVIDIUM (Mass -> Fiber) ------
@@ -404,7 +460,7 @@ async def run_calculate(
                 f"**Water per Chemical Refinery:** {stageA['water_per_refinery']:.0f} mL",
                 f"**Time per Chemical Refinery:** {hms(stageA['time_per_refinery_sec'])}",
             ]
-            await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
+            await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
             return
 
         # ------ PLASTANIUM (Mass -> Fiber -> Plastanium) ------
@@ -450,20 +506,25 @@ async def run_calculate(
                 f"**Total Plastanium:** {plastanium_total:,}",
                 f"**Plastanium per Player (floored):** {per_player:,}",
                 f"**Unallocated Remainder:** {remainder:,}",
+                "",
+                "**Leftovers After Crafting**",
+                f"Leftover Stravidium Fiber: {stageB['fiber_leftover']:,}",
+                f"Leftover Raw Stravidium: {stageA['raw_leftover']:,}",
+                f"Leftover Titanium Ore: {stageB['titanium_leftover']:,}",
             ]
-            await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
+            await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
             return
 
         await interaction.response.send_message("❌ Unknown run type.", ephemeral=True)
 
     except ValueError as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
-        
+
 # ------------- /run-view -------------
 @bot.tree.command(name="run_view", description="View the current state of a run.")
 @app_commands.describe(
     run_id="ID returned by /run",
-    public="If set, the run details will be visible to all users (default: false)"
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def run_view(interaction: discord.Interaction, run_id: str, public: bool = False):
     try:
@@ -473,13 +534,10 @@ async def run_view(interaction: discord.Interaction, run_id: str, public: bool =
         kind = run.get("kind", "?")
         created_by = run.get("created_by", None)
         created_at = run.get("created_at", "")
-        make_ephemeral = True if public else False
 
-
-        # Pretty amounts (show only nonzero or all?)
+        # Pretty amounts
         def fmt_amount(k):
             v = float(amounts.get(k, 0))
-            # Show as int if it's whole; otherwise show with 2 decimals.
             return f"{int(v):,}" if abs(v - int(v)) < 1e-9 else f"{v:,.2f}"
 
         amount_lines = [
@@ -503,16 +561,17 @@ async def run_view(interaction: discord.Interaction, run_id: str, public: bool =
             "**Recorded amounts:**",
             *amount_lines,
         ]
-        await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
+        await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
     except ValueError as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
 # ----------- /run-delete -----------
 @bot.tree.command(name="run_delete", description="Delete a run (creator or admin only).")
 @app_commands.describe(
-    run_id="ID returned by /run"
+    run_id="ID returned by /run",
+    public="If true, post publicly; otherwise reply only to you (default: false)"
 )
-async def run_delete(interaction: discord.Interaction, run_id: str):
+async def run_delete(interaction: discord.Interaction, run_id: str, public: bool = False):
     try:
         run = _get_run_or_err(run_id)
 
@@ -531,7 +590,7 @@ async def run_delete(interaction: discord.Interaction, run_id: str):
         del RUNS[run_id]
         _save_runs(RUNS)
 
-        await interaction.response.send_message(f"🗑️ Run **{run_id}** deleted.")
+        await interaction.response.send_message(f"🗑️ Run **{run_id}** deleted.", ephemeral=is_ephemeral(public))
     except ValueError as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
