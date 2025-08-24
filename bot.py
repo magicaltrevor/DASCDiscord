@@ -269,7 +269,7 @@ async def run_start(interaction: discord.Interaction, kind: str, players_csv: st
     await interaction.response.send_message(
         f"✅ Run created: **{run_id}**\n"
         f"Type: **{kind}**\n"
-        f"Players: {', '.join(players)}", ephemeral=True
+        f"Players: {', '.join(players)}"
     )
 
 # -------------- /run-update --------------
@@ -335,14 +335,16 @@ async def run_update(interaction: discord.Interaction,
     run_id="ID returned by /run",
     processors="(For SPICE only) number of Spice refineries running in parallel",
     chem_refineries="(For STRAVIDIUM/PLASTANIUM) number of Medium Chemical Refineries",
-    large_refineries="(For PLASTANIUM) number of Large Ore Refineries"
+    large_refineries="(For PLASTANIUM) number of Large Ore Refineries",
+    public="If set, the run details will be visible to all users (default: false)"
 )
 async def run_calculate(
     interaction: discord.Interaction,
     run_id: str,
     processors: int = 1,
     chem_refineries: int = 1,
-    large_refineries: int = 1
+    large_refineries: int = 1,
+    public: bool = False
 ):
     try:
         run = _get_run_or_err(run_id)
@@ -354,7 +356,7 @@ async def run_calculate(
         n_players = len(players)
         kind = run["kind"]
         amounts = run["amounts"]
-
+        make_ephemeral = True if public else False
         # ---------- SPICE ----------
         if kind == "spice":
             sand = float(amounts.get("spice", 0.0))
@@ -376,7 +378,7 @@ async def run_calculate(
                 f"**Water per Refinery:** {result['water_per_processor']:.2f}",
                 f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
             ]
-            await interaction.response.send_message("\n".join(msg))
+            await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
             return
 
         # ------ STRAVIDIUM (Mass -> Fiber) ------
@@ -402,7 +404,7 @@ async def run_calculate(
                 f"**Water per Chemical Refinery:** {stageA['water_per_refinery']:.0f} mL",
                 f"**Time per Chemical Refinery:** {hms(stageA['time_per_refinery_sec'])}",
             ]
-            await interaction.response.send_message("\n".join(msg))
+            await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
             return
 
         # ------ PLASTANIUM (Mass -> Fiber -> Plastanium) ------
@@ -449,7 +451,7 @@ async def run_calculate(
                 f"**Plastanium per Player (floored):** {per_player:,}",
                 f"**Unallocated Remainder:** {remainder:,}",
             ]
-            await interaction.response.send_message("\n".join(msg))
+            await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
             return
 
         await interaction.response.send_message("❌ Unknown run type.", ephemeral=True)
@@ -460,9 +462,10 @@ async def run_calculate(
 # ------------- /run-view -------------
 @bot.tree.command(name="run_view", description="View the current state of a run.")
 @app_commands.describe(
-    run_id="ID returned by /run"
+    run_id="ID returned by /run",
+    public="If set, the run details will be visible to all users (default: false)"
 )
-async def run_view(interaction: discord.Interaction, run_id: str):
+async def run_view(interaction: discord.Interaction, run_id: str, public: bool = False):
     try:
         run = _get_run_or_err(run_id)
         players = run.get("players", [])
@@ -470,11 +473,8 @@ async def run_view(interaction: discord.Interaction, run_id: str):
         kind = run.get("kind", "?")
         created_by = run.get("created_by", None)
         created_at = run.get("created_at", "")
-        public_view = run.get("public", "false"")
-        if public_view:
-            make_ephemeral = False  # If false, make ephemeral
-        else:
-            make_ephemeral = True
+        make_ephemeral = True if public else False
+
 
         # Pretty amounts (show only nonzero or all?)
         def fmt_amount(k):
