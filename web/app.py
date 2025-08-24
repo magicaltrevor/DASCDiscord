@@ -130,6 +130,18 @@ BASE_HTML = """
       --r-lg: 1rem;
       --pad:  1rem;
       --shadow: 0 6px 20px rgba(0,0,0,.35);
+
+      /* Helper to hide rows dynamically */
+      .hidden { display: none !important; }
+
+      /* High-contrast red delete button */
+      button.danger{
+        background: linear-gradient(180deg, #e06161, #a02020);
+        border: 1px solid #7f1616;
+        color: #fff;
+        box-shadow: inset 0 1px 0 rgba(255,255,255,.15), 0 6px 14px rgba(0,0,0,.35);
+      }
+      button.danger:hover{ filter: brightness(1.02); 
     }
 
     /* Base */
@@ -292,8 +304,39 @@ BASE_HTML = """
 </main>
 <footer>
   <hr/>
-  <small class="muted">Created by Magical Trevor</small>
+  <small class="muted">Created by Trevor</small>
 </footer>
+<script>
+    // Toggle Update Run inputs based on field selection
+    document.addEventListener('DOMContentLoaded', function () {
+      const fieldSel   = document.getElementById('update-field');
+      const valueRow   = document.getElementById('update-row-value');
+      const amountRow  = document.getElementById('update-row-amount');
+      const valueInput = document.getElementById('update-value');
+      const amtInput   = document.getElementById('update-amount');
+
+      function sync() {
+        if (!fieldSel) return;
+        if (fieldSel.value === 'players') {
+          valueRow.classList.remove('hidden');
+          amountRow.classList.add('hidden');
+          valueInput.required = true;
+          amtInput.required   = false;
+          amtInput.value      = '';
+        } else {
+          valueRow.classList.add('hidden');
+          amountRow.classList.remove('hidden');
+          valueInput.required = false;
+          amtInput.required   = true;
+          valueInput.value    = '';
+        }
+      }
+      if (fieldSel) {
+        fieldSel.addEventListener('change', sync);
+        sync(); // initialize on load
+      }
+    });
+  </script>
 </body>
 </html>
 """
@@ -382,7 +425,7 @@ Unallocated Remainder: {{ plast_full.remainder }}
 RUNS_HTML = """
 {% extends "base.html" %}
 {% block content %}
-<h2 class="section-title center">Run Tracker</h2>
+<h2 class="section-title">Run Tracker</h2>
 <div class="split">
   <section class="card" style="flex:1 1 360px;">
     <h3>Create Run</h3>
@@ -402,7 +445,7 @@ RUNS_HTML = """
     <form method="post" action="{{ url_for('run_update') }}">
       <label>Run ID <input name="run_id" required></label>
       <label>Field
-        <select name="field" required>
+        <select id="update-field" name="field" required>
           <option value="players">players</option>
           <option value="spice">spice</option>
           <option value="stravidium">stravidium</option>
@@ -410,12 +453,25 @@ RUNS_HTML = """
           <option value="plastanium">plastanium</option>
         </select>
       </label>
-      <label>Value (for players) <input name="value" placeholder="NewPlayer"></label>
-      <label>Amount (for resources) <input name="amount" type="number" step="any" placeholder="e.g., 25000"></label>
+
+      <!-- Shown only when field=players -->
+      <div id="update-row-value">
+        <label>Value (player name)
+          <input id="update-value" name="value" placeholder="NewPlayer">
+        </label>
+      </div>
+
+      <!-- Shown for all other fields -->
+      <div id="update-row-amount" class="hidden">
+        <label>Amount
+          <input id="update-amount" name="amount" type="number" step="any" placeholder="e.g., 25000">
+        </label>
+      </div>
+
       <button>Update</button>
     </form>
-
-    <h3 style="margin-top:2rem">Calculate Run</h3>
+    
+      <h3 style="margin-top:2rem">Calculate Run</h3>
     <form method="post" action="{{ url_for('run_calculate') }}">
       <label>Run ID <input name="run_id" required></label>
       <div class="row">
@@ -427,13 +483,22 @@ RUNS_HTML = """
     </form>
 
     <h3 style="margin-top:2rem">View / Delete Run</h3>
-    <form method="get" action="{{ url_for('run_view') }}">
-      <label>Run ID <input name="run_id" required></label>
-      <button>View</button>
-    </form>
-    <form method="post" action="{{ url_for('run_delete') }}" onsubmit="return confirm('Delete this run?');">
-      <label>Run ID <input name="run_id" required></label>
-      <button class="warn">Delete</button>
+    <form id="viewdel" class="row" style="gap:.6rem; align-items:flex-end;">
+      <label style="flex:1 1 220px;">
+        Run ID
+        <input id="vd-runid" name="run_id" required>
+      </label>
+      <div style="display:flex; gap:.6rem; flex-wrap:wrap;">
+        <!-- View uses GET /run/view -->
+        <button formaction="{{ url_for('run_view') }}" formmethod="get">View</button>
+        <!-- Delete uses POST /run/delete -->
+        <button class="danger"
+                formaction="{{ url_for('run_delete') }}"
+                formmethod="post"
+                onclick="return confirm('Delete this run?');">
+          Delete
+        </button>
+      </div>
     </form>
   </section>
 

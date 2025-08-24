@@ -269,7 +269,7 @@ async def run_start(interaction: discord.Interaction, kind: str, players_csv: st
     await interaction.response.send_message(
         f"✅ Run created: **{run_id}**\n"
         f"Type: **{kind}**\n"
-        f"Players: {', '.join(players)}"
+        f"Players: {', '.join(players)}", ephemeral=True
     )
 
 # -------------- /run-update --------------
@@ -304,7 +304,7 @@ async def run_update(interaction: discord.Interaction,
             _save_runs(RUNS)
             await interaction.response.send_message(
                 f"✅ Added **{name}** to run **{run_id}**.\n"
-                f"Roster: {', '.join(run['players'])}"
+                f"Roster: {', '.join(run['players'])}", ephemeral=True
             )
             return
 
@@ -323,7 +323,7 @@ async def run_update(interaction: discord.Interaction,
         _save_runs(RUNS)
         await interaction.response.send_message(
             f"✅ Updated **{field}** for run **{run_id}**.\n"
-            f"New total {field}: {run['amounts'][field]:,}"
+            f"New total {field}: {run['amounts'][field]:,}", ephemeral=True
         )
 
     except ValueError as e:
@@ -470,6 +470,11 @@ async def run_view(interaction: discord.Interaction, run_id: str):
         kind = run.get("kind", "?")
         created_by = run.get("created_by", None)
         created_at = run.get("created_at", "")
+        public_view = run.get("public", "false"")
+        if public_view:
+            make_ephemeral = False  # If false, make ephemeral
+        else:
+            make_ephemeral = True
 
         # Pretty amounts (show only nonzero or all?)
         def fmt_amount(k):
@@ -498,7 +503,7 @@ async def run_view(interaction: discord.Interaction, run_id: str):
             "**Recorded amounts:**",
             *amount_lines,
         ]
-        await interaction.response.send_message("\n".join(msg))
+        await interaction.response.send_message("\n".join(msg), ephemeral=make_ephemeral)
     except ValueError as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
 
