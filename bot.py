@@ -218,7 +218,7 @@ async def spice(
 # ------------- /plastanium_raw -------------
 @bot.tree.command(
     name="plastanium_raw",
-    description="Split raw Stravidium→Fiber + Titanium; show chem refinery water/time, per-player splits, and leftovers."
+    description="Split Stravidium→Fiber + Titanium; show refinery water/time, per-player splits, leftovers."
 )
 @app_commands.describe(
     strav_mass="Total Stravidium Mass",
@@ -260,7 +260,7 @@ async def plastanium_raw(
 # ---------------- /plastanium ----------------
 @bot.tree.command(
     name="plastanium",
-    description="Mass→Fiber then Fiber+Titanium→Plastanium; per-refinery water/time, per-player plastanium, leftovers."
+    description="Mass→Fiber then Fiber+Titanium→Plastanium; per-refinery water/time, per-player pieces, leftovers."
 )
 @app_commands.describe(
     strav_mass="Total Stravidium Mass",
