@@ -107,9 +107,119 @@ def compute_plastanium_large(fibers_avail: float, titanium_ore: float, large_ref
         titanium_leftover=titanium_leftover,
     )
 
-# ---------- UI (templates) ----------
-BASE_HTML = """<!doctype html> ... (unchanged styling from previous message) ... """
-# (To save space here: keep the same BASE_HTML I gave you earlier with the Dune theme, delete comment)
+# ---------------------------
+# UI (Dune-styled)
+# ---------------------------
+BASE_HTML = """
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Dune Ops Tools</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@400;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root{
+      --bg:#0b0e12; --surface:#12161d; --surface-2:#171c24; --border:#29303a;
+      --text:#e7e2d6; --muted:#b9b2a3; --gold:#c8a86a; --gold-2:#a8823e;
+      --warn:#e0b156; --error:#d46a6a; --r-sm:.5rem; --r-md:.75rem; --r-lg:1rem;
+      --pad:1rem; --shadow:0 6px 20px rgba(0,0,0,.35);
+    }
+    html,body{background:radial-gradient(1200px 800px at 60% -10%, #121720 0%, #0b0e12 60%, #0b0e12 100%) fixed;
+      color:var(--text); font-family:Inter, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial; line-height:1.55; margin:0;}
+    a{color:var(--gold); text-decoration:none;} a:hover{color:var(--gold-2); text-decoration:underline;}
+    header{padding:1.2rem 1rem 0; max-width:1100px; margin:0 auto;}
+    main{padding:1rem; max-width:1100px; margin:0 auto;}
+    footer{max-width:1100px; margin:0 auto; padding:1rem; color:var(--muted);}
+    h1,h2,h3{font-family:Cinzel,serif; letter-spacing:.02em; margin:0 0 .6rem 0; color:var(--text); text-shadow:0 1px 0 rgba(0,0,0,.3);}
+    h1{font-weight:700; font-size:clamp(1.6rem,3.6vw,2.4rem);}
+    h2{font-weight:600; font-size:clamp(1.2rem,2.8vw,1.6rem); color:var(--gold);}
+    h3{font-weight:600; font-size:1.1rem; color:var(--gold);}
+    p,li,small{color:var(--text);} .muted{color:var(--muted);}
+    .grid{display:grid; gap:1rem; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));}
+    .split{display:flex; gap:1rem; flex-wrap:wrap; align-items:flex-start;}
+    .mono{font-family:ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;}
+    .card{background:linear-gradient(180deg, rgba(200,168,106,.06), rgba(200,168,106,0) 20%), var(--surface);
+      border:1px solid var(--border); border-radius:var(--r-lg); box-shadow:var(--shadow); padding:var(--pad);}
+    .badge{display:inline-block; margin-left:.5rem; padding:.2rem .55rem; border-radius:999px; border:1px solid var(--gold); color:var(--gold); font-size:.8rem;}
+    hr{border:none; height:1px; background:linear-gradient(90deg, rgba(200,168,106,.0), rgba(200,168,106,.6), rgba(200,168,106,.0)); margin:1rem 0;}
+    form label{display:block; font-size:.95rem; margin:.6rem 0 .2rem; color:var(--muted);}
+    input,select,button,textarea{font:inherit; border-radius:var(--r-sm);}
+    input,select,textarea{background:var(--surface-2); border:1px solid var(--border); color:var(--text); padding:.7rem .8rem; width:100%; outline:none; transition:border-color .15s, box-shadow .15s;}
+    input:focus,select:focus,textarea:focus{border-color:var(--gold); box-shadow:0 0 0 3px rgba(200,168,106,.2);}
+    button{margin-top:.8rem; background:linear-gradient(180deg, var(--gold), var(--gold-2)); color:#1b140a; font-weight:600; border:1px solid var(--gold-2); padding:.65rem 1rem; cursor:pointer;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.25), 0 6px 14px rgba(0,0,0,.35);}
+    button:hover{filter:brightness(1.02);}
+    button.warn{background:linear-gradient(180deg, #f0c06f, #b98024); border-color:#a36c1d; color:#1b140a;}
+    button.danger{background:linear-gradient(180deg, #e06161, #a02020); border:1px solid #7f1616; color:#fff; box-shadow:inset 0 1px 0 rgba(255,255,255,.15), 0 6px 14px rgba(0,0,0,.35);}
+    button.danger:hover{filter:brightness(1.02);}
+    pre{background:#0f131a; border:1px solid var(--border); border-left:3px solid var(--gold); border-radius:var(--r-md); padding:.9rem 1rem; color:var(--text); overflow-x:auto;}
+    nav a{display:inline-block; margin-right:.8rem; padding-bottom:.15rem; border-bottom:2px solid transparent;}
+    nav a:hover{border-bottom-color:var(--gold);}
+    .hidden{display:none !important;}
+    h2.section-title{position:relative; padding-bottom:.4rem;}
+    h2.section-title::after{content:""; position:absolute; left:0; bottom:-.2rem; width:96px; height:2px; background:linear-gradient(90deg, var(--gold), transparent); border-radius:2px; opacity:.9;}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Dune Ops Tools <span class="badge">Spice • Stravidium • Plastanium</span></h1>
+  <p class="muted">Calculators + Run Tracker for guild ops.</p>
+  <nav>
+    <a href="{{ url_for('index') }}">Calculators</a> ·
+    <a href="{{ url_for('runs') }}">Run Tracker</a>
+  </nav>
+  {% with messages = get_flashed_messages() %}
+    {% if messages %}
+      <ul>
+        {% for m in messages %}<li class="warn">{{ m }}</li>{% endfor %}
+      </ul>
+    {% endif %}
+  {% endwith %}
+  <hr/>
+</header>
+<main>
+  {% block content %}{% endblock %}
+</main>
+<footer>
+  <hr/>
+  <small class="muted">Fly-ready • Flask on port 8080 • Data: runs_web.json</small>
+</footer>
+
+<script>
+  // Toggle Update Run inputs based on field selection
+  document.addEventListener('DOMContentLoaded', function () {
+    const fieldSel   = document.getElementById('update-field');
+    const valueRow   = document.getElementById('update-row-value');
+    const amountRow  = document.getElementById('update-row-amount');
+    const valueInput = document.getElementById('update-value');
+    const amtInput   = document.getElementById('update-amount');
+
+    function sync() {
+      if (!fieldSel) return;
+      if (fieldSel.value === 'players') {
+        valueRow.classList.remove('hidden');
+        amountRow.classList.add('hidden');
+        valueInput.required = true;
+        amtInput.required   = false;
+        amtInput.value      = '';
+      } else {
+        valueRow.classList.add('hidden');
+        amountRow.classList.remove('hidden');
+        valueInput.required = false;
+        amtInput.required   = true;
+        valueInput.value    = '';
+      }
+    }
+    if (fieldSel) {
+      fieldSel.addEventListener('change', sync);
+      sync(); // initialize on load
+    }
+  });
+</script>
+</body>
+</html>
+"""
 
 INDEX_HTML = """
 {% extends "base.html" %}
