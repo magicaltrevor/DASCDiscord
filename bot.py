@@ -27,7 +27,6 @@ def _save_runs(data: dict) -> None:
 RUNS = _load_runs()
 
 def _new_run_id() -> str:
-    # Short, friendly ID
     return uuid4().hex[:8]
 
 def _parse_players_csv(csv_str: str) -> list[str]:
@@ -42,7 +41,6 @@ def _get_run_or_err(run_id: str):
 # =========================
 # Game constants (Spice)
 # =========================
-# Large Spice Refinery
 SAND_PER_BATCH = 10_000
 MELANGE_PER_BATCH = 200
 WATER_PER_BATCH = 75_000
@@ -62,7 +60,7 @@ FIBER_PER_PLASTANIUM = 1
 WATER_PER_PLASTANIUM = 1250
 SEC_PER_PLASTANIUM_LARGE = 20
 
-# Plastanium @ Medium Ore Refinery (unused here)
+# (unused here) Medium ore variant
 TI_PER_PLASTANIUM_MED = 6
 SEC_PER_PLASTANIUM_MED = 30
 
@@ -73,7 +71,6 @@ def hms(seconds: float) -> str:
     return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
 def is_ephemeral(public: bool) -> bool:
-    """Return True when the reply should be private (ephemeral); False when public."""
     return not public
 
 def calculate_spice(sand: float, players: int, processors: int):
@@ -95,14 +92,25 @@ def calculate_spice(sand: float, players: int, processors: int):
         "time_seconds_parallel": parallel_seconds,
     }
 
-def compute_fibers(strav_mass: int, chem_refineries: int):
-    """Mass -> Fibers stage. Returns counts + per-refinery water/time + raw leftovers."""
+# ---------- Landsraad-aware crafting helpers ----------
+def compute_fibers(strav_mass: float, chem_refineries: int, landsraad: bool = False):
+    """
+    Mass -> Fibers (Medium Chemical Refinery).
+    If landsraad=True, per-fiber costs (mass & water) are 25% cheaper.
+    """
     chem_refineries = max(1, chem_refineries)
-    fibers = strav_mass // STRAV_MASS_PER_FIBER
-    raw_consumed = fibers * STRAV_MASS_PER_FIBER
-    raw_leftover = strav_mass - raw_consumed
-    water_total = fibers * WATER_PER_FIBER
-    time_single = fibers * SEC_PER_FIBER
+    cf = 0.75 if landsraad else 1.0
+
+    mass_per_fiber   = STRAV_MASS_PER_FIBER * cf
+    water_per_fiber  = WATER_PER_FIBER * cf
+
+    fibers = int(strav_mass // mass_per_fiber) if mass_per_fiber > 0 else 0
+    raw_consumed  = fibers * mass_per_fiber
+    raw_leftover  = max(0.0, strav_mass - raw_consumed)
+
+    water_total   = fibers * water_per_fiber
+    time_single   = fibers * SEC_PER_FIBER  # unchanged per piece
+
     return {
         "fibers": fibers,
         "raw_consumed": raw_consumed,
@@ -112,29 +120,35 @@ def compute_fibers(strav_mass: int, chem_refineries: int):
         "time_per_refinery_sec": time_single / chem_refineries,
     }
 
-def compute_plastanium_large(fibers_avail: int, titanium_ore: int, large_refineries: int):
+def compute_plastanium_large(fibers_avail: float, titanium_ore: float, large_refineries: int, landsraad: bool = False):
     """
-    Fiber + Titanium -> Plastanium stage (Large Ore Refinery).
-    Returns piece counts, per-refinery water/time, and material consumption/leftovers.
+    Fiber + Titanium -> Plastanium (Large Ore Refinery).
+    If landsraad=True, per-piece costs (fiber, Ti, water) are 25% cheaper.
     """
     large_refineries = max(1, large_refineries)
-    max_by_fiber = fibers_avail // FIBER_PER_PLASTANIUM
-    max_by_titanium = titanium_ore // TI_PER_PLASTANIUM_LARGE
-    pieces = min(max_by_fiber, max_by_titanium)
+    cf = 0.75 if landsraad else 1.0
 
-    fiber_used = pieces * FIBER_PER_PLASTANIUM
-    titanium_used = pieces * TI_PER_PLASTANIUM_LARGE
-    fiber_leftover = fibers_avail - fiber_used
-    titanium_leftover = titanium_ore - titanium_used
+    fiber_per_piece = FIBER_PER_PLASTANIUM * cf
+    ti_per_piece    = TI_PER_PLASTANIUM_LARGE * cf
+    water_per_piece = WATER_PER_PLASTANIUM * cf
 
-    water_total = pieces * WATER_PER_PLASTANIUM
-    time_single = pieces * SEC_PER_PLASTANIUM_LARGE
+    pieces_by_fiber   = int(fibers_avail  // fiber_per_piece) if fiber_per_piece > 0 else 0
+    pieces_by_titanium= int(titanium_ore // ti_per_piece) if ti_per_piece > 0 else 0
+    pieces = min(pieces_by_fiber, pieces_by_titanium)
+
+    fiber_used       = pieces * fiber_per_piece
+    titanium_used    = pieces * ti_per_piece
+    fiber_leftover   = max(0.0, fibers_avail - fiber_used)
+    titanium_leftover= max(0.0, titanium_ore - titanium_used)
+
+    water_total      = pieces * water_per_piece
+    time_single      = pieces * SEC_PER_PLASTANIUM_LARGE  # unchanged per piece
+
     return {
         "pieces": pieces,
         "water_total": water_total,
         "water_per_refinery": water_total / large_refineries,
         "time_per_refinery_sec": time_single / large_refineries,
-        # New: detailed usage/leftovers
         "fiber_used": fiber_used,
         "fiber_leftover": fiber_leftover,
         "titanium_used": titanium_used,
@@ -175,6 +189,7 @@ async def spice(interaction: discord.Interaction, sand: float, players: int, pro
             f"**Total Water Required:** {result['total_water']:.2f}",
             f"**Water per Processor:** {result['water_per_processor']:.2f}",
             f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
+            "_Note: Landsraad only affects crafting, not spice refining._",
         ]
         await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
     except Exception as e:
@@ -183,33 +198,40 @@ async def spice(interaction: discord.Interaction, sand: float, players: int, pro
 # ------------- /plastanium_raw -------------
 @bot.tree.command(
     name="plastanium_raw",
-    description="Split raw Stravidium→Fiber + Titanium; show chem refinery water/time and per-player raw splits."
+    description="Split raw Stravidium→Fiber + Titanium; show chem refinery water/time, per-player splits, and leftovers."
 )
 @app_commands.describe(
     strav_mass="Total Stravidium Mass",
     titanium_ore="Total Titanium Ore",
     players="Number of players",
     chem_refineries="Number of Medium Chemical Refineries",
+    landsraad="Apply 25% crafting cost reduction (true/false)",
     public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def plastanium_raw(
     interaction: discord.Interaction,
-    strav_mass: int, titanium_ore: int, players: int, chem_refineries: int, public: bool = False
+    strav_mass: int, titanium_ore: int, players: int, chem_refineries: int,
+    landsraad: bool = False, public: bool = False
 ):
     try:
-        stageA = compute_fibers(strav_mass, chem_refineries)
+        stageA = compute_fibers(strav_mass, chem_refineries, landsraad=landsraad)
         fibers = stageA["fibers"]
         fibers_per_player = fibers // players
         titanium_per_player = titanium_ore // players
         msg = [
             f"**Stravidium Mass:** {strav_mass:,} | **Titanium Ore:** {titanium_ore:,}",
             f"**Players:** {players} | **Chem Refineries:** {chem_refineries}",
+            f"**Landsraad –25% crafting costs:** {'ON' if landsraad else 'OFF'}",
             "",
             f"**Water per Chem Refinery:** {stageA['water_per_refinery']:.0f} mL",
             f"**Time per Chem Refinery:** {hms(stageA['time_per_refinery_sec'])}",
             "",
             f"**Stravidium Fibers per Player (floored):** {fibers_per_player:,}",
             f"**Titanium Ore per Player (floored):** {titanium_per_player:,}",
+            "",
+            "**Leftovers After Fiber Stage**",
+            f"Raw Stravidium Consumed: {stageA['raw_consumed']:.2f}",
+            f"Raw Stravidium Leftover: {stageA['raw_leftover']:.2f}",
         ]
         await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
     except Exception as e:
@@ -218,7 +240,7 @@ async def plastanium_raw(
 # ---------------- /plastanium ----------------
 @bot.tree.command(
     name="plastanium",
-    description="Mass→Fiber then Fiber+Titanium→Plastanium; per-refinery water/time + per-player plastanium."
+    description="Mass→Fiber then Fiber+Titanium→Plastanium; per-refinery water/time, per-player plastanium, leftovers."
 )
 @app_commands.describe(
     strav_mass="Total Stravidium Mass",
@@ -226,16 +248,18 @@ async def plastanium_raw(
     players="Number of players",
     large_refineries="Number of Large Ore Refineries",
     chem_refineries="Number of Medium Chemical Refineries",
+    landsraad="Apply 25% crafting cost reduction (true/false)",
     public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def plastanium(
     interaction: discord.Interaction,
-    strav_mass: int, titanium_ore: int, players: int, large_refineries: int, chem_refineries: int, public: bool = False
+    strav_mass: int, titanium_ore: int, players: int, large_refineries: int, chem_refineries: int,
+    landsraad: bool = False, public: bool = False
 ):
     try:
-        stageA = compute_fibers(strav_mass, chem_refineries)
+        stageA = compute_fibers(strav_mass, chem_refineries, landsraad=landsraad)
         fibers = stageA["fibers"]
-        stageB = compute_plastanium_large(fibers, titanium_ore, large_refineries)
+        stageB = compute_plastanium_large(fibers, titanium_ore, large_refineries, landsraad=landsraad)
         plastanium_total = stageB["pieces"]
         per_player = plastanium_total // players
         remainder = plastanium_total - per_player * players
@@ -243,23 +267,25 @@ async def plastanium(
         msg = [
             f"**Inputs** — Stravidium Mass: {strav_mass:,}, Titanium Ore: {titanium_ore:,}",
             f"Players: {players} | Chem Refineries: {chem_refineries} | Large Ore Refineries: {large_refineries}",
+            f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
             "",
             "**Fiber Stage (Medium Chemical Refinery)**",
             f"Water per Chem Refinery: {stageA['water_per_refinery']:.0f} mL",
             f"Time per Chem Refinery: {hms(stageA['time_per_refinery_sec'])}",
+            f"Raw Stravidium Consumed: {stageA['raw_consumed']:.2f}",
+            f"Raw Stravidium Leftover: {stageA['raw_leftover']:.2f}",
             "",
             "**Plastanium Stage (Large Ore Refinery)**",
             f"Water per Large Ore Refinery: {stageB['water_per_refinery']:.0f} mL",
             f"Time per Large Ore Refinery: {hms(stageB['time_per_refinery_sec'])}",
+            f"Fiber Used: {stageB['fiber_used']:.2f}",
+            f"Fiber Leftover: {stageB['fiber_leftover']:.2f}",
+            f"Titanium Used: {stageB['titanium_used']:.2f}",
+            f"Titanium Leftover: {stageB['titanium_leftover']:.2f}",
             "",
             f"**Total Plastanium:** {plastanium_total:,}",
             f"**Plastanium per Player (floored):** {per_player:,}",
             f"**Unallocated Remainder:** {remainder:,}",
-            "",
-            "**Leftovers After Crafting**",
-            f"Leftover Stravidium Fiber: {stageB['fiber_leftover']:,}",
-            f"Leftover Raw Stravidium: {stageA['raw_leftover']:,}",
-            f"Leftover Titanium Ore: {stageB['titanium_leftover']:,}",
         ]
         await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
     except Exception as e:
@@ -272,11 +298,11 @@ async def help_spicebot(interaction: discord.Interaction):
         "**Spice Distribution Bot — Commands**",
         "",
         "**/spice** sand:<amount> players:<count> processors:<count> [public:<true|false>]",
-        "**/plastanium_raw** strav_mass:<amount> titanium_ore:<amount> players:<count> chem_refineries:<count> [public:<true|false>]",
-        "**/plastanium** strav_mass:<amount> titanium_ore:<amount> players:<count> large_refineries:<count> chem_refineries:<count> [public:<true|false>]",
-        "**/run** kind:<spice|plastanium|stravidium> players_csv:<Player1,Player2,...> [public:<true|false>] → returns a run ID",
+        "**/plastanium_raw** strav_mass:<amount> titanium_ore:<amount> players:<count> chem_refineries:<count> [landsraad:<true|false>] [public:<true|false>]",
+        "**/plastanium** strav_mass:<amount> titanium_ore:<amount> players:<count> large_refineries:<count> chem_refineries:<count> [landsraad:<true|false>] [public:<true|false>]",
+        "**/run** kind:<spice|plastanium|stravidium> players_csv:<P1,P2,...> [public:<true|false>] → returns a run ID",
         "**/run_update** run_id:<id> field:<players|spice|plastanium|stravidium|titanium> [value:<PlayerName>] [amount:<number>] [public:<true|false>]",
-        "**/run_calculate** run_id:<id> processors:<#> chem_refineries:<#> large_refineries:<#> [public:<true|false>]",
+        "**/run_calculate** run_id:<id> processors:<#> chem_refineries:<#> large_refineries:<#> [landsraad:<true|false>] [public:<true|false>]",
         "**/run_view** run_id:<id> [public:<true|false>]",
         "**/run_delete** run_id:<id> [public:<true|false>] (creator/admin only)",
     ]
@@ -295,7 +321,7 @@ async def run_start(interaction: discord.Interaction, kind: str, players_csv: st
         await interaction.response.send_message("❌ kind must be one of: spice, plastanium, stravidium", ephemeral=True)
         return
 
-    players = list(dict.fromkeys(_parse_players_csv(players_csv)))  # dedupe, preserve order
+    players = list(dict.fromkeys(_parse_players_csv(players_csv)))
     if not players:
         await interaction.response.send_message("❌ Provide at least one player in players_csv.", ephemeral=True)
         return
@@ -303,22 +329,15 @@ async def run_start(interaction: discord.Interaction, kind: str, players_csv: st
     run_id = _new_run_id()
     RUNS[run_id] = {
         "kind": kind,
-        "players": players,                 # list[str]
-        "amounts": {                        # numeric accumulators
-            "spice": 0.0,
-            "plastanium": 0.0,
-            "stravidium": 0.0,
-            "titanium": 0.0,
-        },
+        "players": players,
+        "amounts": {"spice": 0.0, "plastanium": 0.0, "stravidium": 0.0, "titanium": 0.0},
         "created_by": interaction.user.id,
         "created_at": interaction.created_at.isoformat() if hasattr(interaction, "created_at") else "",
     }
     _save_runs(RUNS)
 
     await interaction.response.send_message(
-        f"✅ Run created: **{run_id}**\n"
-        f"Type: **{kind}**\n"
-        f"Players: {', '.join(players)}",
+        f"✅ Run created: **{run_id}**\nType: **{kind}**\nPlayers: {', '.join(players)}",
         ephemeral=is_ephemeral(public)
     )
 
@@ -357,13 +376,11 @@ async def run_update(
             run["players"].append(name)
             _save_runs(RUNS)
             await interaction.response.send_message(
-                f"✅ Added **{name}** to run **{run_id}**.\n"
-                f"Roster: {', '.join(run['players'])}",
+                f"✅ Added **{name}** to run **{run_id}**.\nRoster: {', '.join(run['players'])}",
                 ephemeral=is_ephemeral(public)
             )
             return
 
-        # Resource update
         if field not in AMOUNT_FIELDS:
             await interaction.response.send_message(
                 "❌ field must be one of: players | spice | plastanium | stravidium | titanium",
@@ -377,8 +394,7 @@ async def run_update(
         run["amounts"][field] = float(run["amounts"].get(field, 0.0)) + float(amount)
         _save_runs(RUNS)
         await interaction.response.send_message(
-            f"✅ Updated **{field}** for run **{run_id}**.\n"
-            f"New total {field}: {run['amounts'][field]:,}",
+            f"✅ Updated **{field}** for run **{run_id}**.\nNew total {field}: {run['amounts'][field]:,}",
             ephemeral=is_ephemeral(public)
         )
 
@@ -392,6 +408,7 @@ async def run_update(
     processors="(For SPICE only) number of Spice refineries running in parallel",
     chem_refineries="(For STRAVIDIUM/PLASTANIUM) number of Medium Chemical Refineries",
     large_refineries="(For PLASTANIUM) number of Large Ore Refineries",
+    landsraad="Apply 25% crafting cost reduction (true/false)",
     public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def run_calculate(
@@ -400,6 +417,7 @@ async def run_calculate(
     processors: int = 1,
     chem_refineries: int = 1,
     large_refineries: int = 1,
+    landsraad: bool = False,
     public: bool = False
 ):
     try:
@@ -413,7 +431,6 @@ async def run_calculate(
         kind = run["kind"]
         amounts = run["amounts"]
 
-        # ---------- SPICE ----------
         if kind == "spice":
             sand = float(amounts.get("spice", 0.0))
             if sand <= 0:
@@ -433,25 +450,26 @@ async def run_calculate(
                 f"**Total Water:** {result['total_water']:.2f}",
                 f"**Water per Refinery:** {result['water_per_processor']:.2f}",
                 f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
+                "_Note: Landsraad only affects crafting, not spice refining._",
             ]
             await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
             return
 
-        # ------ STRAVIDIUM (Mass -> Fiber) ------
         if kind == "stravidium":
-            mass = int(amounts.get("stravidium", 0.0))
+            mass = float(amounts.get("stravidium", 0.0))
             if mass <= 0:
                 await interaction.response.send_message("❌ No stravidium mass recorded for this run.", ephemeral=True)
                 return
             chem = max(1, chem_refineries)
-            stageA = compute_fibers(mass, chem)
+            stageA = compute_fibers(mass, chem, landsraad=landsraad)
             fibers_total = int(stageA["fibers"])
             per_player_fibers = fibers_total // n_players
             remainder = fibers_total - per_player_fibers * n_players
             msg = [
                 f"**Run {run_id}** — Type: **stravidium**",
                 f"Players ({n_players}): {', '.join(players)}",
-                f"Stravidium Mass: {mass:,} | Chemical Refineries: {chem}",
+                f"Stravidium Mass: {int(mass):,} | Chemical Refineries: {chem}",
+                f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
                 "",
                 f"**Total Fibers:** {fibers_total:,}",
                 f"**Fibers per Player (floored):** {per_player_fibers:,}",
@@ -459,19 +477,20 @@ async def run_calculate(
                 "",
                 f"**Water per Chemical Refinery:** {stageA['water_per_refinery']:.0f} mL",
                 f"**Time per Chemical Refinery:** {hms(stageA['time_per_refinery_sec'])}",
+                "",
+                "**Leftovers After Fiber Stage**",
+                f"Raw Stravidium Consumed: {stageA['raw_consumed']:.2f}",
+                f"Raw Stravidium Leftover: {stageA['raw_leftover']:.2f}",
             ]
             await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
             return
 
-        # ------ PLASTANIUM (Mass -> Fiber -> Plastanium) ------
         if kind == "plastanium":
-            # REQUIRE both stravidium mass and titanium ore
-            mass = int(amounts.get("stravidium", 0.0))
-            titanium = int(amounts.get("titanium", 0.0))
+            mass = float(amounts.get("stravidium", 0.0))
+            titanium = float(amounts.get("titanium", 0.0))
             if mass <= 0 or titanium <= 0:
                 await interaction.response.send_message(
-                    "❌ Plastanium runs require both **stravidium** mass and **titanium** amounts. "
-                    "Use /run_update to add them.",
+                    "❌ Plastanium runs require both **stravidium** mass and **titanium** amounts. Use /run_update to add them.",
                     ephemeral=True
                 )
                 return
@@ -479,12 +498,10 @@ async def run_calculate(
             chem = max(1, chem_refineries)
             large = max(1, large_refineries)
 
-            # Stage A: Mass -> Fiber (Medium Chemical Refinery)
-            stageA = compute_fibers(mass, chem)
-            fibers_total = int(stageA["fibers"])
+            stageA = compute_fibers(mass, chem, landsraad=landsraad)
+            fibers_total = float(stageA["fibers"])
 
-            # Stage B: Fiber + Titanium -> Plastanium (Large Ore Refinery)
-            stageB = compute_plastanium_large(fibers_total, titanium, large)
+            stageB = compute_plastanium_large(fibers_total, titanium, large, landsraad=landsraad)
             plastanium_total = int(stageB["pieces"])
             per_player = plastanium_total // n_players
             remainder = plastanium_total - per_player * n_players
@@ -492,25 +509,27 @@ async def run_calculate(
             msg = [
                 f"**Run {run_id}** — Type: **plastanium**",
                 f"Players ({n_players}): {', '.join(players)}",
-                f"Inputs — Stravidium Mass: {mass:,}, Titanium Ore: {titanium:,}",
+                f"Inputs — Stravidium Mass: {int(mass):,}, Titanium Ore: {int(titanium):,}",
                 f"Chem Refineries: {chem} | Large Ore Refineries: {large}",
+                f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
                 "",
                 "**Fiber Stage (Medium Chemical Refinery)**",
                 f"Water per Chem Refinery: {stageA['water_per_refinery']:.0f} mL",
                 f"Time per Chem Refinery: {hms(stageA['time_per_refinery_sec'])}",
+                f"Raw Stravidium Consumed: {stageA['raw_consumed']:.2f}",
+                f"Raw Stravidium Leftover: {stageA['raw_leftover']:.2f}",
                 "",
                 "**Plastanium Stage (Large Ore Refinery)**",
                 f"Water per Large Ore Refinery: {stageB['water_per_refinery']:.0f} mL",
                 f"Time per Large Ore Refinery: {hms(stageB['time_per_refinery_sec'])}",
+                f"Fiber Used: {stageB['fiber_used']:.2f}",
+                f"Fiber Leftover: {stageB['fiber_leftover']:.2f}",
+                f"Titanium Used: {stageB['titanium_used']:.2f}",
+                f"Titanium Leftover: {stageB['titanium_leftover']:.2f}",
                 "",
                 f"**Total Plastanium:** {plastanium_total:,}",
                 f"**Plastanium per Player (floored):** {per_player:,}",
                 f"**Unallocated Remainder:** {remainder:,}",
-                "",
-                "**Leftovers After Crafting**",
-                f"Leftover Stravidium Fiber: {stageB['fiber_leftover']:,}",
-                f"Leftover Raw Stravidium: {stageA['raw_leftover']:,}",
-                f"Leftover Titanium Ore: {stageB['titanium_leftover']:,}",
             ]
             await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
             return
@@ -535,7 +554,6 @@ async def run_view(interaction: discord.Interaction, run_id: str, public: bool =
         created_by = run.get("created_by", None)
         created_at = run.get("created_at", "")
 
-        # Pretty amounts
         def fmt_amount(k):
             v = float(amounts.get(k, 0))
             return f"{int(v):,}" if abs(v - int(v)) < 1e-9 else f"{v:,.2f}"
@@ -575,7 +593,6 @@ async def run_delete(interaction: discord.Interaction, run_id: str, public: bool
     try:
         run = _get_run_or_err(run_id)
 
-        # Permission check: creator OR user with Administrator permission
         is_creator = (interaction.user.id == run.get("created_by"))
         is_admin = getattr(getattr(interaction.user, "guild_permissions", None), "administrator", False)
 
@@ -586,10 +603,8 @@ async def run_delete(interaction: discord.Interaction, run_id: str, public: bool
             )
             return
 
-        # Delete and persist
         del RUNS[run_id]
         _save_runs(RUNS)
-
         await interaction.response.send_message(f"🗑️ Run **{run_id}** deleted.", ephemeral=is_ephemeral(public))
     except ValueError as e:
         await interaction.response.send_message(f"❌ {e}", ephemeral=True)
