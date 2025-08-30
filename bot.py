@@ -73,14 +73,27 @@ def hms(seconds: float) -> str:
 def is_ephemeral(public: bool) -> bool:
     return not public
 
-def calculate_spice(sand: float, players: int, processors: int):
+# ---------- Landsraad-aware calculations ----------
+def calculate_spice(sand: float, players: int, processors: int, landsraad: bool = False):
+    """
+    Spice refining with optional Landsraad –25% cost reduction.
+    Reduction applies to *inputs per output* (sand & water), time per piece unchanged.
+    """
     if sand <= 0 or players < 1 or processors < 1:
         raise ValueError("sand>0, players>=1, processors>=1 required")
-    scale = sand / SAND_PER_BATCH
+
+    cf = 0.75 if landsraad else 1.0
+    sand_per_batch   = SAND_PER_BATCH * cf
+    water_per_batch  = WATER_PER_BATCH * cf
+    time_per_batch   = SECONDS_PER_BATCH
+
+    # With cheaper inputs, the same sand produces more melange (and takes more total time).
+    scale = sand / sand_per_batch
     total_melange = MELANGE_PER_BATCH * scale
-    total_water = WATER_PER_BATCH * scale
-    total_seconds_single = SECONDS_PER_BATCH * scale
+    total_water = water_per_batch * scale
+    total_seconds_single = time_per_batch * scale
     parallel_seconds = total_seconds_single / processors
+
     per_player_floor = math.floor(total_melange / players)
     remainder = total_melange - (per_player_floor * players)
     return {
@@ -92,11 +105,10 @@ def calculate_spice(sand: float, players: int, processors: int):
         "time_seconds_parallel": parallel_seconds,
     }
 
-# ---------- Landsraad-aware crafting helpers ----------
 def compute_fibers(strav_mass: float, chem_refineries: int, landsraad: bool = False):
     """
     Mass -> Fibers (Medium Chemical Refinery).
-    If landsraad=True, per-fiber costs (mass & water) are 25% cheaper.
+    If landsraad=True, per-fiber costs (mass & water) are 25% cheaper. Time per fiber unchanged.
     """
     chem_refineries = max(1, chem_refineries)
     cf = 0.75 if landsraad else 1.0
@@ -123,7 +135,7 @@ def compute_fibers(strav_mass: float, chem_refineries: int, landsraad: bool = Fa
 def compute_plastanium_large(fibers_avail: float, titanium_ore: float, large_refineries: int, landsraad: bool = False):
     """
     Fiber + Titanium -> Plastanium (Large Ore Refinery).
-    If landsraad=True, per-piece costs (fiber, Ti, water) are 25% cheaper.
+    If landsraad=True, per-piece costs (fiber, Ti, water) are 25% cheaper. Time per piece unchanged.
     """
     large_refineries = max(1, large_refineries)
     cf = 0.75 if landsraad else 1.0
@@ -132,17 +144,17 @@ def compute_plastanium_large(fibers_avail: float, titanium_ore: float, large_ref
     ti_per_piece    = TI_PER_PLASTANIUM_LARGE * cf
     water_per_piece = WATER_PER_PLASTANIUM * cf
 
-    pieces_by_fiber   = int(fibers_avail  // fiber_per_piece) if fiber_per_piece > 0 else 0
-    pieces_by_titanium= int(titanium_ore // ti_per_piece) if ti_per_piece > 0 else 0
+    pieces_by_fiber    = int(fibers_avail  // fiber_per_piece) if fiber_per_piece > 0 else 0
+    pieces_by_titanium = int(titanium_ore // ti_per_piece) if ti_per_piece > 0 else 0
     pieces = min(pieces_by_fiber, pieces_by_titanium)
 
-    fiber_used       = pieces * fiber_per_piece
-    titanium_used    = pieces * ti_per_piece
-    fiber_leftover   = max(0.0, fibers_avail - fiber_used)
-    titanium_leftover= max(0.0, titanium_ore - titanium_used)
+    fiber_used        = pieces * fiber_per_piece
+    titanium_used     = pieces * ti_per_piece
+    fiber_leftover    = max(0.0, fibers_avail - fiber_used)
+    titanium_leftover = max(0.0, titanium_ore - titanium_used)
 
-    water_total      = pieces * water_per_piece
-    time_single      = pieces * SEC_PER_PLASTANIUM_LARGE  # unchanged per piece
+    water_total       = pieces * water_per_piece
+    time_single       = pieces * SEC_PER_PLASTANIUM_LARGE  # unchanged per piece
 
     return {
         "pieces": pieces,
@@ -172,15 +184,24 @@ bot = SpiceBot()
     sand="Total Spice Sand collected",
     players="Number of players",
     processors="Number of processors/refineries",
+    landsraad="Apply 25% manufacturing cost reduction (true/false)",
     public="If true, post publicly; otherwise reply only to you (default: false)"
 )
-async def spice(interaction: discord.Interaction, sand: float, players: int, processors: int = 1, public: bool = False):
+async def spice(
+    interaction: discord.Interaction,
+    sand: float,
+    players: int,
+    processors: int = 1,
+    landsraad: bool = False,
+    public: bool = False
+):
     try:
-        result = calculate_spice(sand, players, processors)
+        result = calculate_spice(sand, players, processors, landsraad=landsraad)
         msg = [
             f"**Spice Sand:** {sand:,.0f}",
             f"**Players:** {players}",
             f"**Processors:** {processors}",
+            f"**Landsraad –25% costs:** {'ON' if landsraad else 'OFF'}",
             "",
             f"**Total Melange:** {result['total_melange']:.2f}",
             f"**Melange per Player (floored):** {int(result['melange_per_player']):,}",
@@ -189,7 +210,6 @@ async def spice(interaction: discord.Interaction, sand: float, players: int, pro
             f"**Total Water Required:** {result['total_water']:.2f}",
             f"**Water per Processor:** {result['water_per_processor']:.2f}",
             f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
-            "_Note: Landsraad only affects crafting, not spice refining._",
         ]
         await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
     except Exception as e:
@@ -205,7 +225,7 @@ async def spice(interaction: discord.Interaction, sand: float, players: int, pro
     titanium_ore="Total Titanium Ore",
     players="Number of players",
     chem_refineries="Number of Medium Chemical Refineries",
-    landsraad="Apply 25% crafting cost reduction (true/false)",
+    landsraad="Apply 25% manufacturing cost reduction (true/false)",
     public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def plastanium_raw(
@@ -221,7 +241,7 @@ async def plastanium_raw(
         msg = [
             f"**Stravidium Mass:** {strav_mass:,} | **Titanium Ore:** {titanium_ore:,}",
             f"**Players:** {players} | **Chem Refineries:** {chem_refineries}",
-            f"**Landsraad –25% crafting costs:** {'ON' if landsraad else 'OFF'}",
+            f"**Landsraad –25% costs:** {'ON' if landsraad else 'OFF'}",
             "",
             f"**Water per Chem Refinery:** {stageA['water_per_refinery']:.0f} mL",
             f"**Time per Chem Refinery:** {hms(stageA['time_per_refinery_sec'])}",
@@ -248,7 +268,7 @@ async def plastanium_raw(
     players="Number of players",
     large_refineries="Number of Large Ore Refineries",
     chem_refineries="Number of Medium Chemical Refineries",
-    landsraad="Apply 25% crafting cost reduction (true/false)",
+    landsraad="Apply 25% manufacturing cost reduction (true/false)",
     public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def plastanium(
@@ -267,7 +287,7 @@ async def plastanium(
         msg = [
             f"**Inputs** — Stravidium Mass: {strav_mass:,}, Titanium Ore: {titanium_ore:,}",
             f"Players: {players} | Chem Refineries: {chem_refineries} | Large Ore Refineries: {large_refineries}",
-            f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
+            f"Landsraad –25% costs: {'ON' if landsraad else 'OFF'}",
             "",
             "**Fiber Stage (Medium Chemical Refinery)**",
             f"Water per Chem Refinery: {stageA['water_per_refinery']:.0f} mL",
@@ -297,7 +317,7 @@ async def help_spicebot(interaction: discord.Interaction):
     msg = [
         "**Spice Distribution Bot — Commands**",
         "",
-        "**/spice** sand:<amount> players:<count> processors:<count> [public:<true|false>]",
+        "**/spice** sand:<amount> players:<count> processors:<count> [landsraad:<true|false>] [public:<true|false>]",
         "**/plastanium_raw** strav_mass:<amount> titanium_ore:<amount> players:<count> chem_refineries:<count> [landsraad:<true|false>] [public:<true|false>]",
         "**/plastanium** strav_mass:<amount> titanium_ore:<amount> players:<count> large_refineries:<count> chem_refineries:<count> [landsraad:<true|false>] [public:<true|false>]",
         "**/run** kind:<spice|plastanium|stravidium> players_csv:<P1,P2,...> [public:<true|false>] → returns a run ID",
@@ -405,10 +425,10 @@ async def run_update(
 @bot.tree.command(name="run_calculate", description="Calculate cuts for a run.")
 @app_commands.describe(
     run_id="ID returned by /run",
-    processors="(For SPICE only) number of Spice refineries running in parallel",
+    processors="(For SPICE) number of Spice refineries running in parallel",
     chem_refineries="(For STRAVIDIUM/PLASTANIUM) number of Medium Chemical Refineries",
     large_refineries="(For PLASTANIUM) number of Large Ore Refineries",
-    landsraad="Apply 25% crafting cost reduction (true/false)",
+    landsraad="Apply 25% manufacturing cost reduction (true/false)",
     public="If true, post publicly; otherwise reply only to you (default: false)"
 )
 async def run_calculate(
@@ -437,11 +457,12 @@ async def run_calculate(
                 await interaction.response.send_message("❌ No spice sand recorded for this run.", ephemeral=True)
                 return
             proc = max(1, processors)
-            result = calculate_spice(sand, n_players, proc)
+            result = calculate_spice(sand, n_players, proc, landsraad=landsraad)
             msg = [
                 f"**Run {run_id}** — Type: **spice**",
                 f"Players ({n_players}): {', '.join(players)}",
                 f"Spice Sand: {sand:,.0f} | Spice Refineries: {proc}",
+                f"Landsraad –25% costs: {'ON' if landsraad else 'OFF'}",
                 "",
                 f"**Total Melange:** {result['total_melange']:.2f}",
                 f"**Melange per Player (floored):** {int(result['melange_per_player']):,}",
@@ -450,7 +471,6 @@ async def run_calculate(
                 f"**Total Water:** {result['total_water']:.2f}",
                 f"**Water per Refinery:** {result['water_per_processor']:.2f}",
                 f"**Processing Time (parallel):** {hms(result['time_seconds_parallel'])}",
-                "_Note: Landsraad only affects crafting, not spice refining._",
             ]
             await interaction.response.send_message("\n".join(msg), ephemeral=is_ephemeral(public))
             return
@@ -469,7 +489,7 @@ async def run_calculate(
                 f"**Run {run_id}** — Type: **stravidium**",
                 f"Players ({n_players}): {', '.join(players)}",
                 f"Stravidium Mass: {int(mass):,} | Chemical Refineries: {chem}",
-                f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
+                f"Landsraad –25% costs: {'ON' if landsraad else 'OFF'}",
                 "",
                 f"**Total Fibers:** {fibers_total:,}",
                 f"**Fibers per Player (floored):** {per_player_fibers:,}",
@@ -511,7 +531,7 @@ async def run_calculate(
                 f"Players ({n_players}): {', '.join(players)}",
                 f"Inputs — Stravidium Mass: {int(mass):,}, Titanium Ore: {int(titanium):,}",
                 f"Chem Refineries: {chem} | Large Ore Refineries: {large}",
-                f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
+                f"Landsraad –25% costs: {'ON' if landsraad else 'OFF'}",
                 "",
                 "**Fiber Stage (Medium Chemical Refinery)**",
                 f"Water per Chem Refinery: {stageA['water_per_refinery']:.0f} mL",

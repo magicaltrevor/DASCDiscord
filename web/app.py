@@ -6,45 +6,67 @@ from flask import Flask, request, redirect, url_for, render_template_string, fla
 from jinja2 import DictLoader
 
 app = Flask(__name__)
-app.secret_key = os.getenv("FLASK_SECRET", "dev-secret")
+app.secret_key = os.getenv("FLASK_SECRET", "dev-secret")  # set a real secret in prod
 
-# ---------- Ratios ----------
+# ---------------------------
+# Ratios / constants
+# ---------------------------
+# Spice (Large Spice Refinery)
 SAND_PER_BATCH = 10_000
 MELANGE_PER_BATCH = 200
 WATER_PER_BATCH = 75_000
 SEC_PER_BATCH = 2_700
 
+# Stravidium Fiber (Medium Chemical Refinery)
 STRAV_MASS_PER_FIBER = 3
 WATER_PER_FIBER = 100
 SEC_PER_FIBER = 10
 
+# Plastanium (Large Ore Refinery)
 TI_PER_PLASTANIUM_LARGE = 4
 FIBER_PER_PLASTANIUM = 1
 WATER_PER_PLASTANIUM = 1250
 SEC_PER_PLASTANIUM_LARGE = 20
 
-# ---------- Persistence ----------
+# Run persistence
 RUNS_PATH = Path("runs_web.json")
+
 def load_runs():
     if RUNS_PATH.exists():
-        try: return json.loads(RUNS_PATH.read_text(encoding="utf-8"))
-        except Exception: return {}
+        try:
+            return json.loads(RUNS_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
     return {}
-def save_runs(data): RUNS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
+def save_runs(data):
+    RUNS_PATH.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
 RUNS = load_runs()
 
-# ---------- Helpers ----------
+# ---------------------------
+# Helpers
+# ---------------------------
 def hms(seconds: float) -> str:
     total = int(round(seconds))
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
     return f"{h}h {m}m {s}s" if h else f"{m}m {s}s"
 
-def calc_spice(sand: float, players: int, processors: int):
-    scale = sand / SAND_PER_BATCH
+def calc_spice(sand: float, players: int, processors: int, landsraad: bool = False):
+    """
+    Spice refining with optional Landsraad –25% cost reduction (applies to sand & water per output).
+    Time per piece unchanged.
+    """
+    cf = 0.75 if landsraad else 1.0
+    sand_per_batch  = SAND_PER_BATCH * cf
+    water_per_batch = WATER_PER_BATCH * cf
+    time_per_batch  = SEC_PER_BATCH
+
+    scale = sand / sand_per_batch
     total_melange = MELANGE_PER_BATCH * scale
-    total_water = WATER_PER_BATCH * scale
-    total_seconds_single = SEC_PER_BATCH * scale
+    total_water = water_per_batch * scale
+    total_seconds_single = time_per_batch * scale
     processors = max(1, processors)
     parallel_seconds = total_seconds_single / processors
     per_player_floor = math.floor(total_melange / max(1, players))
@@ -89,13 +111,13 @@ def compute_plastanium_large(fibers_avail: float, titanium_ore: float, large_ref
     pieces_by_titanium = int(titanium_ore // ti_per_piece) if ti_per_piece > 0 else 0
     pieces = min(pieces_by_fiber, pieces_by_titanium)
 
-    fiber_used       = pieces * fiber_per_piece
-    titanium_used    = pieces * ti_per_piece
-    fiber_leftover   = max(0.0, fibers_avail - fiber_used)
-    titanium_leftover= max(0.0, titanium_ore - titanium_used)
+    fiber_used        = pieces * fiber_per_piece
+    titanium_used     = pieces * ti_per_piece
+    fiber_leftover    = max(0.0, fibers_avail - fiber_used)
+    titanium_leftover = max(0.0, titanium_ore - titanium_used)
 
-    water_total      = pieces * water_per_piece
-    time_single      = pieces * SEC_PER_PLASTANIUM_LARGE
+    water_total       = pieces * water_per_piece
+    time_single       = pieces * SEC_PER_PLASTANIUM_LARGE
     return dict(
         pieces=pieces,
         water_total=water_total,
@@ -233,6 +255,7 @@ INDEX_HTML = """
       <label>Spice Sand <input type="number" name="sand" step="any" required></label>
       <label>Players <input type="number" name="players" value="4" min="1" required></label>
       <label>Processors (Spice Refineries) <input type="number" name="processors" value="1" min="1" required></label>
+      <label><input type="checkbox" name="landsraad" value="1"> Landsraad –25% manufacturing costs</label>
       <button>Calculate</button>
     </form>
     {% if spice %}
@@ -246,7 +269,7 @@ Total Water: {{ '%.2f'|format(spice.total_water) }}
 Water per Processor: {{ '%.2f'|format(spice.water_per_processor) }}
 Processing Time (parallel): {{ spice.time_hms }}
 
-Note: Landsraad only affects crafting, not spice refining.
+Landsraad: {{ 'ON' if spice.landsraad else 'OFF' }}
       </pre>
     {% endif %}
   </section>
@@ -258,7 +281,7 @@ Note: Landsraad only affects crafting, not spice refining.
       <label>Titanium Ore <input type="number" name="titanium" min="0" required></label>
       <label>Players <input type="number" name="players" value="4" min="1" required></label>
       <label>Chem Refineries (Medium) <input type="number" name="chem" value="1" min="1" required></label>
-      <label><input type="checkbox" name="landsraad" value="1"> Landsraad –25% crafting costs</label>
+      <label><input type="checkbox" name="landsraad" value="1"> Landsraad –25% manufacturing costs</label>
       <button>Calculate</button>
     </form>
     {% if plast_raw %}
@@ -287,7 +310,7 @@ Landsraad: {{ 'ON' if plast_raw.landsraad else 'OFF' }}
       <label>Players <input type="number" name="players" value="4" min="1" required></label>
       <label>Chem Refineries (Medium) <input type="number" name="chem" value="1" min="1" required></label>
       <label>Large Ore Refineries <input type="number" name="large" value="1" min="1" required></label>
-      <label><input type="checkbox" name="landsraad" value="1"> Landsraad –25% crafting costs</label>
+      <label><input type="checkbox" name="landsraad" value="1"> Landsraad –25% manufacturing costs</label>
       <button>Calculate</button>
     </form>
     {% if plast_full %}
@@ -374,7 +397,7 @@ RUNS_HTML = """
         <label>Chem Refineries (Medium) <input name="chem" type="number" min="1" value="1"></label>
         <label>Large Ore Refineries <input name="large" type="number" min="1" value="1"></label>
       </div>
-      <label><input type="checkbox" name="landsraad" value="1"> Landsraad –25% crafting costs</label>
+      <label><input type="checkbox" name="landsraad" value="1"> Landsraad –25% manufacturing costs</label>
       <button>Calculate</button>
     </form>
 
@@ -404,10 +427,12 @@ RUNS_HTML = """
 {% endblock %}
 """
 
-# Register templates (use your full BASE_HTML from previous step)
+# Register templates
 app.jinja_loader = DictLoader({"base.html": BASE_HTML, "index.html": INDEX_HTML, "runs.html": RUNS_HTML})
 
-# ---------- Routes - Calculators ----------
+# ---------------------------
+# Routes - Calculators
+# ---------------------------
 @app.get("/")
 def index():
     return render_template_string(INDEX_HTML, spice=None, plast_raw=None, plast_full=None)
@@ -418,8 +443,10 @@ def calc_spice_route():
         sand = float(request.form["sand"])
         players = int(request.form["players"])
         processors = int(request.form["processors"])
-        res = calc_spice(sand, players, processors)
+        landsraad = bool(request.form.get("landsraad"))
+        res = calc_spice(sand, players, processors, landsraad=landsraad)
         res["time_hms"] = hms(res["time_seconds_parallel"])
+        res["landsraad"] = landsraad
         return render_template_string(INDEX_HTML, spice=res, plast_raw=None, plast_full=None)
     except Exception as e:
         flash(f"Error: {e}")
@@ -474,6 +501,7 @@ def calc_plast_full_route():
             plast_total=plast_total,
             per_player=plast_total // players,
             remainder=plast_total - (plast_total // players) * players,
+            # leftovers/usage
             raw_consumed=stageA["raw_consumed"],
             raw_leftover=stageA["raw_leftover"],
             fiber_used=stageB["fiber_used"],
@@ -487,7 +515,9 @@ def calc_plast_full_route():
         flash(f"Error: {e}")
         return redirect(url_for("index"))
 
-# ---------- Routes - Runs ----------
+# ---------------------------
+# Routes - Runs
+# ---------------------------
 @app.get("/runs")
 def runs():
     return render_template_string(RUNS_HTML, out=None)
@@ -504,7 +534,11 @@ def run_create():
         flash("Provide at least one player.")
         return redirect(url_for("runs"))
     run_id = uuid4().hex[:8]
-    RUNS[run_id] = dict(kind=kind, players=players, amounts=dict(spice=0.0, stravidium=0.0, titanium=0.0, plastanium=0.0))
+    RUNS[run_id] = dict(
+        kind=kind,
+        players=players,
+        amounts=dict(spice=0.0, stravidium=0.0, titanium=0.0, plastanium=0.0),
+    )
     save_runs(RUNS)
     return render_template_string(RUNS_HTML, out=f"Run created: {run_id}\nType: {kind}\nPlayers: {', '.join(players)}")
 
@@ -588,15 +622,17 @@ def run_calculate():
     kind = run["kind"]
     amounts = run["amounts"]
 
+    # SPICE
     if kind == "spice":
         sand = float(amounts.get("spice", 0.0))
         if sand <= 0:
             return render_template_string(RUNS_HTML, out="No spice sand recorded.")
-        res = calc_spice(sand, n_players, max(1, processors))
+        res = calc_spice(sand, n_players, max(1, processors), landsraad=landsraad)
         out = [
             f"Run {run_id} — SPICE",
             f"Players ({n_players}): {', '.join(players)}",
             f"Spice Sand: {sand:,.0f} | Spice Refineries: {processors}",
+            f"Landsraad –25% costs: {'ON' if landsraad else 'OFF'}",
             "",
             f"Total Melange: {res['total_melange']:.2f}",
             f"Melange per Player (floored): {int(res['melange_per_player'])}",
@@ -605,10 +641,10 @@ def run_calculate():
             f"Total Water: {res['total_water']:.2f}",
             f"Water per Refinery: {res['water_per_processor']:.2f}",
             f"Processing Time (parallel): {hms(res['time_seconds_parallel'])}",
-            "Note: Landsraad only affects crafting, not spice refining.",
         ]
         return render_template_string(RUNS_HTML, out="\n".join(out))
 
+    # STRAVIDIUM (Mass -> Fiber)
     if kind == "stravidium":
         mass = float(amounts.get("stravidium", 0.0))
         if mass <= 0:
@@ -621,7 +657,7 @@ def run_calculate():
             f"Run {run_id} — STRAVIDIUM",
             f"Players ({n_players}): {', '.join(players)}",
             f"Stravidium Mass: {int(mass):,} | Chem Refineries: {chem}",
-            f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
+            f"Landsraad –25% costs: {'ON' if landsraad else 'OFF'}",
             "",
             f"Total Fibers: {fibers_total:,}",
             f"Fibers per Player (floored): {per_player:,}",
@@ -636,6 +672,7 @@ def run_calculate():
         ]
         return render_template_string(RUNS_HTML, out="\n".join(out))
 
+    # PLASTANIUM (Mass -> Fiber -> Plastanium)
     if kind == "plastanium":
         mass = float(amounts.get("stravidium", 0.0))
         titanium = float(amounts.get("titanium", 0.0))
@@ -656,7 +693,7 @@ def run_calculate():
             f"Players ({n_players}): {', '.join(players)}",
             f"Inputs — Stravidium Mass: {int(mass):,}, Titanium Ore: {int(titanium):,}",
             f"Chem Refineries: {chem_ref} | Large Ore Refineries: {large_ref}",
-            f"Landsraad –25% crafting costs: {'ON' if landsraad else 'OFF'}",
+            f"Landsraad –25% costs: {'ON' if landsraad else 'OFF'}",
             "",
             "Fiber Stage (Medium Chemical Refinery)",
             f"  Water per Chem Refinery: {int(stageA['water_per_refinery'])} mL",
@@ -681,4 +718,5 @@ def run_calculate():
     return render_template_string(RUNS_HTML, out="Unknown run type.")
 
 if __name__ == "__main__":
+    # Bind to 0.0.0.0:8080 for Fly
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "8080")))
